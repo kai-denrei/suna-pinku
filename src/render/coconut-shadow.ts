@@ -11,6 +11,7 @@ type ParsedMesh = {
   positions: Float32Array
   texcoords: Float32Array
   indices: Uint32Array
+  wind?: Float32Array
 }
 
 type ParsedTree = {
@@ -54,23 +55,80 @@ struct ShadowView {
 struct VertexInput {
   @location(0) position: vec3f,
   @location(1) uv: vec2f,
+  @location(2) frondAnchorProgress: vec4f,
+  @location(3) frondDirectionLeaf: vec4f,
 }
 struct VertexOutput {
   @builtin(position) clip: vec4f,
   @location(0) uv: vec2f,
 }
+fn smoothCurve(value: f32) -> f32 {
+  let t = clamp(value, 0.0, 1.0);
+  return t * t * (3.0 - 2.0 * t);
+}
 @vertex fn vertex(input: VertexInput) -> VertexOutput {
   let height = clamp(input.position.y, 0.0, 1.0);
-  let bend = height * height;
   let phase = view.motion.x;
-  let swayX = (sin(phase * 0.73) * 0.045 + sin(phase * 0.31 + 1.6) * 0.018) * bend;
-  let swayZ = (cos(phase * 0.61 + 0.7) * 0.034 + sin(phase * 0.27) * 0.014) * bend;
-  let twist = sin(phase * 0.43 + height * 2.2) * 0.022 * bend;
-  let cosine = cos(twist);
-  let sine = sin(twist);
-  let rotatedXZ = vec2f(input.position.x * cosine - input.position.z * sine,
-    input.position.x * sine + input.position.z * cosine);
-  let position = vec3f(rotatedXZ.x + swayX, input.position.y, rotatedXZ.y + swayZ);
+
+  // Keep the trunk base planted and bend its centerline progressively. The
+  // crown follows this same low-frequency motion instead of translating as a
+  // rigid object.
+  let bend = height * height * (0.35 + 0.65 * height * height);
+  let wind = vec2f(
+    sin(phase * 0.46) + sin(phase * 0.19 + 1.7) * 0.34,
+    cos(phase * 0.39 + 0.55) + sin(phase * 0.16 + 2.4) * 0.28
+  );
+  let trunkSway = wind * vec2f(0.019, 0.014) * bend;
+  let trunkTwist = (sin(phase * 0.31 + height * 1.9) * 0.010 + sin(phase * 0.13 + 0.8) * 0.006) * bend;
+  let twistCos = cos(trunkTwist);
+  let twistSin = sin(trunkTwist);
+  let trunkXZ = vec2f(
+    input.position.x * twistCos - input.position.z * twistSin,
+    input.position.x * twistSin + input.position.z * twistCos
+  ) + trunkSway;
+  var position = vec3f(trunkXZ.x, input.position.y, trunkXZ.y);
+
+  // Each authored palm frond is a disconnected mesh island. CPU-side metadata
+  // supplies its attachment point, direction, and normalized distance from the
+  // attachment. This lets the shadow-only tree flex individual fronds while
+  // keeping every vertex in one frond coherent.
+  let leaf = input.frondDirectionLeaf.w;
+  let progress = smoothCurve(input.frondAnchorProgress.w);
+  let anchor = input.frondAnchorProgress.xyz;
+  let frondDirection = input.frondDirectionLeaf.xyz;
+  let horizontalLength = max(length(frondDirection.xz), 1e-4);
+  let horizontalDirection = frondDirection.xz / horizontalLength;
+  let sideways = vec2f(-horizontalDirection.y, horizontalDirection.x);
+  let windLength = max(length(wind), 1e-4);
+  let windDirection = wind / windLength;
+  let windStrength = clamp(windLength, 0.35, 1.25);
+  let windAlignment = dot(horizontalDirection, windDirection);
+  let frondSeed = dot(frondDirection, vec3f(4.73, 7.19, 3.11));
+
+  // Fronds lag the trunk slightly and flex most strongly toward their tips.
+  // The shared gust term keeps the whole crown in sync; direction-derived
+  // phase offsets stop all leaves from moving as a single rigid plate.
+  let gust = sin(phase * 0.58 + frondSeed) * 0.70 + sin(phase * 0.27 + frondSeed * 0.61 + 1.2) * 0.30;
+  let tipLag = sin(phase * 0.82 + frondSeed * 1.37 + progress * 2.2);
+  let drag = windDirection * (0.0065 + 0.0045 * abs(windAlignment)) * windStrength * (0.72 + 0.28 * gust);
+  let lateral = sideways * tipLag * 0.0045;
+  let ripple = sideways * sin(phase * 1.12 + frondSeed * 1.91 + progress * 4.6) * 0.0018;
+  let frondOffset = (drag + lateral + ripple) * progress * leaf;
+  position = vec3f(position.x + frondOffset.x, position.y, position.z + frondOffset.y);
+
+  // Small elevation changes are important in a projected shadow: they make a
+  // frond visibly bow rather than merely slide sideways across the sand.
+  let lift = (gust * 0.0060 * windStrength - windAlignment * 0.0035 * windStrength + tipLag * 0.0022) * progress * leaf;
+  position = vec3f(position.x, position.y + lift, position.z);
+
+  // Keep the root of every frond attached to the trunk's bent crown.
+  let anchorHeight = clamp(anchor.y, 0.0, 1.0);
+  let anchorBend = anchorHeight * anchorHeight * (0.35 + 0.65 * anchorHeight * anchorHeight);
+  let anchorSway = wind * vec2f(0.019, 0.014) * anchorBend;
+  let vertexSway = wind * vec2f(0.019, 0.014) * bend;
+  let rootCorrection = (anchorSway - vertexSway) * (1.0 - progress) * leaf;
+  position = vec3f(position.x + rootCorrection.x, position.y, position.z + rootCorrection.y);
+
   let projected = position.xz - vec2f(${LIGHT_X.toFixed(9)}, ${LIGHT_Z.toFixed(9)}) * (position.y / ${LIGHT_Y.toFixed(9)});
   let normalized = (projected - view.projected.xy) / view.projected.zw;
   var output: VertexOutput;
@@ -214,6 +272,100 @@ function accessorIndices(gltf: Gltf, binary: ArrayBuffer, accessorIndex: number)
   return result
 }
 
+function buildWindData(positions: Float32Array, indices: Uint32Array) {
+  const vertexCount = positions.length / 3
+  const parent = new Uint32Array(vertexCount)
+  for (let vertex = 0; vertex < vertexCount; vertex++) parent[vertex] = vertex
+
+  const find = (vertex: number) => {
+    let root = vertex
+    while (parent[root] !== root) root = parent[root]!
+    while (parent[vertex] !== vertex) {
+      const next = parent[vertex]!
+      parent[vertex] = root
+      vertex = next
+    }
+    return root
+  }
+  const union = (a: number, b: number) => {
+    const rootA = find(a)
+    const rootB = find(b)
+    if (rootA !== rootB) parent[rootB] = rootA
+  }
+
+  for (let index = 0; index < indices.length; index += 3) {
+    const a = indices[index]!
+    const b = indices[index + 1]!
+    const c = indices[index + 2]!
+    union(a, b); union(b, c); union(c, a)
+  }
+
+  const components = new Map<number, number[]>()
+  for (let vertex = 0; vertex < vertexCount; vertex++) {
+    const root = find(vertex)
+    const component = components.get(root)
+    if (component) component.push(vertex)
+    else components.set(root, [vertex])
+  }
+
+  // Two vec4 attributes per vertex: attachment.xyz + progress, then the
+  // attachment-to-tip direction.xyz + leaf flag. The palm asset has one
+  // connected trunk island and many disconnected frond islands, so this
+  // topology gives us stable per-frond motion without bones or skinning.
+  const data = new Float32Array(vertexCount * 8)
+  for (const vertices of components.values()) {
+    let rootVertex = vertices[0]!
+    let rootRadius = Infinity
+    for (const vertex of vertices) {
+      const x = positions[vertex * 3]!
+      const z = positions[vertex * 3 + 2]!
+      const radius = x * x + z * z
+      if (radius < rootRadius) { rootRadius = radius; rootVertex = vertex }
+    }
+
+    const rootX = positions[rootVertex * 3]!
+    const rootY = positions[rootVertex * 3 + 1]!
+    const rootZ = positions[rootVertex * 3 + 2]!
+    let tipVertex = rootVertex
+    let lengthSquared = 0
+    for (const vertex of vertices) {
+      const dx = positions[vertex * 3]! - rootX
+      const dy = positions[vertex * 3 + 1]! - rootY
+      const dz = positions[vertex * 3 + 2]! - rootZ
+      const distanceSquared = dx * dx + dy * dy + dz * dz
+      if (distanceSquared > lengthSquared) { lengthSquared = distanceSquared; tipVertex = vertex }
+    }
+
+    const tipX = positions[tipVertex * 3]!
+    const tipY = positions[tipVertex * 3 + 1]!
+    const tipZ = positions[tipVertex * 3 + 2]!
+    const length = Math.sqrt(lengthSquared)
+    const isFrond = rootY > 0.60 && length > 0.14
+    if (!isFrond) continue
+
+    const invLength = length > 1e-6 ? 1 / length : 0
+    const directionX = (tipX - rootX) * invLength
+    const directionY = (tipY - rootY) * invLength
+    const directionZ = (tipZ - rootZ) * invLength
+    for (const vertex of vertices) {
+      const dx = positions[vertex * 3]! - rootX
+      const dy = positions[vertex * 3 + 1]! - rootY
+      const dz = positions[vertex * 3 + 2]! - rootZ
+      const progress = Math.min(1, Math.hypot(dx, dy, dz) * invLength)
+      const offset = vertex * 8
+      data[offset] = rootX
+      data[offset + 1] = rootY
+      data[offset + 2] = rootZ
+      data[offset + 3] = progress
+      data[offset + 4] = directionX
+      data[offset + 5] = directionY
+      data[offset + 6] = directionZ
+      data[offset + 7] = 1
+    }
+  }
+  return data
+}
+
 function parseGlb(buffer: ArrayBuffer) {
   const data = new DataView(buffer)
   if (data.getUint32(0, true) !== 0x46546c67 || data.getUint32(4, true) !== 2) throw new Error('Coconut tree is not a valid glTF 2.0 binary.')
@@ -276,7 +428,7 @@ async function loadTree(): Promise<ParsedTree> {
       positions[index + 1] = (mesh.positions[index + 1]! - minY) / height
       positions[index + 2] = (mesh.positions[index + 2]! - centerZ) / height
     }
-    return { ...mesh, positions }
+    return { ...mesh, positions, wind: buildWindData(positions, mesh.indices) }
   })
 
   let minProjectedX = Infinity; let minProjectedZ = Infinity
@@ -306,13 +458,16 @@ async function loadTree(): Promise<ParsedTree> {
 
 function createVertexData(mesh: ParsedMesh) {
   const vertexCount = mesh.positions.length / 3
-  const data = new Float32Array(vertexCount * 5)
+  const data = new Float32Array(vertexCount * 13)
+  const wind = mesh.wind ?? new Float32Array(vertexCount * 8)
   for (let vertex = 0; vertex < vertexCount; vertex++) {
-    data[vertex * 5] = mesh.positions[vertex * 3]!
-    data[vertex * 5 + 1] = mesh.positions[vertex * 3 + 1]!
-    data[vertex * 5 + 2] = mesh.positions[vertex * 3 + 2]!
-    data[vertex * 5 + 3] = mesh.texcoords[vertex * 2]!
-    data[vertex * 5 + 4] = mesh.texcoords[vertex * 2 + 1]!
+    const offset = vertex * 13
+    data[offset] = mesh.positions[vertex * 3]!
+    data[offset + 1] = mesh.positions[vertex * 3 + 1]!
+    data[offset + 2] = mesh.positions[vertex * 3 + 2]!
+    data[offset + 3] = mesh.texcoords[vertex * 2]!
+    data[offset + 4] = mesh.texcoords[vertex * 2 + 1]!
+    for (let component = 0; component < 8; component++) data[offset + 5 + component] = wind[vertex * 8 + component]!
   }
   return data
 }
@@ -382,8 +537,11 @@ export class CoconutShadow {
     const colorSampler = this.device.createSampler({ label: 'Coconut alpha sampler', magFilter: 'linear', minFilter: 'linear', addressModeU: 'repeat', addressModeV: 'repeat' })
     const shadowModule = this.device.createShaderModule({ label: 'Coconut shadow WGSL', code: shadowShader })
     this.shadowPipeline = await this.device.createRenderPipelineAsync({ label: 'Coconut shadow mask', layout: 'auto',
-      vertex: { module: shadowModule, entryPoint: 'vertex', buffers: [{ arrayStride: 20, attributes: [
-        { shaderLocation: 0, offset: 0, format: 'float32x3' }, { shaderLocation: 1, offset: 12, format: 'float32x2' },
+      vertex: { module: shadowModule, entryPoint: 'vertex', buffers: [{ arrayStride: 52, attributes: [
+        { shaderLocation: 0, offset: 0, format: 'float32x3' },
+        { shaderLocation: 1, offset: 12, format: 'float32x2' },
+        { shaderLocation: 2, offset: 20, format: 'float32x4' },
+        { shaderLocation: 3, offset: 36, format: 'float32x4' },
       ] }] },
       fragment: { module: shadowModule, entryPoint: 'fragment', targets: [{ format: 'rgba8unorm', blend: {
         color: { operation: 'max', srcFactor: 'one', dstFactor: 'one' }, alpha: { operation: 'max', srcFactor: 'one', dstFactor: 'one' },
