@@ -1,4 +1,5 @@
 import { describe, expect, test } from 'vitest'
+import { shouldUseMobileGrainFiltering } from '../src/platform/mobile'
 import { drawingBuffer } from '../src/platform/viewport'
 import { FixedClock } from '../src/simulation/clock'
 import { SandCamera } from '../src/render/camera'
@@ -16,6 +17,17 @@ describe('Drawing buffer policy', () => {
     expect(drawingBuffer(0, 200, 2)).toBeNull()
     expect(drawingBuffer(200, 0, 2)).toBeNull()
     expect(drawingBuffer(200, 200, NaN)!.dpr).toBe(1)
+  })
+})
+
+describe('Mobile grain filtering selection', () => {
+  test('enables the alias-safe surface path on phones and tablets', () => {
+    expect(shouldUseMobileGrainFiltering({ maxTouchPoints: 5, coarsePointer: true, userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 27_0 like Mac OS X) Mobile', width: 430, height: 932 })).toBe(true)
+    expect(shouldUseMobileGrainFiltering({ maxTouchPoints: 5, coarsePointer: true, userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X) Safari', width: 1024, height: 1366 })).toBe(true)
+  })
+  test('keeps the desktop renderer on the original shader', () => {
+    expect(shouldUseMobileGrainFiltering({ maxTouchPoints: 0, coarsePointer: false, userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X)', width: 1440, height: 900 })).toBe(false)
+    expect(shouldUseMobileGrainFiltering({ maxTouchPoints: 10, coarsePointer: false, userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)', width: 1920, height: 1080 })).toBe(false)
   })
 })
 

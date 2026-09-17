@@ -25,8 +25,9 @@ export class SandRenderer {
   private readonly device: GPUDevice
   private readonly solver: SandSolver
   private readonly format: GPUTextureFormat
-  constructor(device: GPUDevice, solver: SandSolver, format: GPUTextureFormat) {
-    this.device = device; this.solver = solver; this.format = format
+  private readonly mobileGrainFiltering: boolean
+  constructor(device: GPUDevice, solver: SandSolver, format: GPUTextureFormat, mobileGrainFiltering = false) {
+    this.device = device; this.solver = solver; this.format = format; this.mobileGrainFiltering = mobileGrainFiltering
     this.uniform = device.createBuffer({ label: 'Surface view', size: 112, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST })
     this.lighting = new BedLighting(device, solver, this.uniform)
     const resolution = solver.resolution
@@ -48,7 +49,7 @@ export class SandRenderer {
     await this.lighting.initialize()
     const module = await checkedShader(this.device, 'Granular surface WGSL', surfaceShader)
     this.pipeline = await this.device.createRenderPipelineAsync({ label: 'Granular sand surface', layout: 'auto',
-      vertex: { module, entryPoint: 'vertex' }, fragment: { module, entryPoint: 'fragment', targets: [{ format: this.format }] },
+      vertex: { module, entryPoint: 'vertex' }, fragment: { module, entryPoint: this.mobileGrainFiltering ? 'fragmentMobile' : 'fragment', targets: [{ format: this.format }] },
       primitive: { topology: 'triangle-list', cullMode: 'none' },
       depthStencil: { format: 'depth24plus', depthWriteEnabled: true, depthCompare: 'less' },
     })

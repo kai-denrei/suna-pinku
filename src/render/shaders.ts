@@ -55,6 +55,33 @@ fn hash2(position: vec2f) -> vec2f {
   hashed += dot(hashed, hashed.yzx + 33.33);
   return fract((hashed.xx + hashed.yz) * hashed.zy);
 }
+struct GrainAppearance {
+  offset: vec2f,
+  color: vec2f,
+  edge: f32,
+  roundness: f32,
+}
+fn grainAppearance(coordinate: vec2f) -> GrainAppearance {
+  let baseCell = floor(coordinate);
+  var nearest = 100.0;
+  var second = 100.0;
+  var grainOffset = vec2f(0.0);
+  var grainColor = vec2f(0.5);
+  for (var row = -1; row <= 1; row++) {
+    for (var column = -1; column <= 1; column++) {
+      let cell = baseCell + vec2f(f32(column), f32(row));
+      let random = hash2(cell);
+      let offset = coordinate - cell - (0.18 + 0.64 * random);
+      let distance = dot(offset, offset);
+      if (distance < nearest) {
+        second = nearest; nearest = distance; grainOffset = offset; grainColor = random;
+      } else { second = min(second, distance); }
+    }
+  }
+  let boundary = sqrt(second) - sqrt(nearest);
+  return GrainAppearance(grainOffset, grainColor, smoothstep(0.015, 0.13, boundary),
+    sqrt(max(0.0, 1.0 - min(nearest / 0.42, 1.0))));
+}
 fn toneMap(color: vec3f) -> vec3f {
   return clamp((color * (2.51 * color + 0.03)) / (color * (2.43 * color + 0.59) + 0.14), vec3f(0.0), vec3f(1.0));
 }
@@ -99,6 +126,75 @@ struct FragmentOutput { @location(0) color: vec4f, @builtin(frag_depth) depth: f
   let grainEdge = smoothstep(0.015, 0.13, boundary);
   let roundness = sqrt(max(0.0, 1.0 - min(nearest / 0.42, 1.0)));
   let grainHeight = detail * grainEdge * roundness * mix(0.000045, 0.000115, grainColor.x);
+  let facet = (grainColor - 0.5) * 0.52 + grainOffset * (0.38 + roundness * 0.42);
+  let normal = normalize(macroNormal + vec3f(facet.x, 0.0, facet.y) * detail);
+  let displacedWorld = input.world + macroNormal * grainHeight;
+  let light = normalize(view.light.xyz);
+  let towardEye = normalize(view.eye.xyz - displacedWorld);
+  let halfway = normalize(light + towardEye);
+  let cosine = max(0.0, dot(normal, light));
+  let viewCosine = max(0.02, dot(normal, towardEye));
+  let illumination = illuminationAt(position);
+  let visibility = illumination.x;
+  let occlusion = illumination.y;
+  let microOcclusion = mix(1.0, mix(0.68, 1.0, grainEdge), detail);
+  let mineral = mix(vec3f(0.46, 0.315, 0.17), vec3f(0.72, 0.56, 0.33), grainColor.x);
+  let darkGrain = mix(1.0, 0.3, smoothstep(0.94, 0.985, grainColor.y));
+  let albedo = mix(vec3f(0.59, 0.435, 0.25), mineral * darkGrain * mix(0.62, 1.0, grainEdge), detail);
+  let roughness = mix(0.80, 0.42, grainColor.y * detail);
+  let alphaSquared = pow(roughness, 4.0);
+  let normalHalf = max(0.0, dot(normal, halfway));
+  let denominator = normalHalf * normalHalf * (alphaSquared - 1.0) + 1.0;
+  let distribution = alphaSquared / max(3.141593 * denominator * denominator, 0.0001);
+  let fresnel = 0.04 + 0.96 * pow(1.0 - max(0.0, dot(halfway, towardEye)), 5.0);
+  let geometry = cosine * viewCosine / max((cosine * 0.7 + 0.3) * (viewCosine * 0.7 + 0.3), 0.001);
+  let specular = distribution * fresnel * geometry / max(4.0 * cosine * viewCosine, 0.001);
+  let diffuse = cosine * (0.84 + 0.16 * (1.0 - viewCosine));
+  let ambient = environment(normal) * (0.24 + 0.16 * macroNormal.y) * occlusion * microOcclusion;
+  let direct = vec3f(1.0, 0.89, 0.69) * 2.55 * visibility * microOcclusion;
+  let reflected = reflect(-towardEye, normal);
+  let environmentSpecular = environment(reflected) * fresnel * pow(1.0 - roughness, 2.0) * 0.32 * occlusion;
+  var radiance = albedo * (ambient + direct * diffuse) + direct * specular * cosine + environmentSpecular;
+  let ringDistance = abs(length(position - view.pointer.xy) - view.pointer.z);
+  let ring = (1.0 - smoothstep(0.0003, 0.0008, ringDistance)) * view.pointer.w;
+  radiance *= 1.0 - 0.2 * ring;
+  let projected = project(displacedWorld);
+  var output: FragmentOutput;
+  output.color = vec4f(toSrgb(toneMap(radiance)), 1.0);
+  output.depth = projected.z / projected.w;
+  return output;
+}
+@fragment fn fragmentMobile(input: VertexOutput) -> FragmentOutput {
+  let position = input.world.xz;
+  let spacing = view.grid.y / view.grid.x;
+  let heightLeft = stateAt(position - vec2f(spacing, 0.0)).x;
+  let heightRight = stateAt(position + vec2f(spacing, 0.0)).x;
+  let heightBack = stateAt(position - vec2f(0.0, spacing)).x;
+  let heightFront = stateAt(position + vec2f(0.0, spacing)).x;
+  let macroNormal = normalize(vec3f(heightLeft - heightRight, 2.0 * spacing, heightBack - heightFront));
+  let grainCoordinate = position / 0.00043;
+  let grainDx = dpdx(grainCoordinate);
+  let grainDy = dpdy(grainCoordinate);
+  let footprint = max(length(grainDx), length(grainDy));
+
+  // The physical grain generator is a jittered Voronoi lattice. When its
+  // projected spacing approaches the framebuffer sampling rate, sampling every
+  // pixel at the same phase produces the perspective fan/ring moire seen on
+  // phones. Decorrelate that phase with one stable stochastic sample inside the
+  // real pixel footprint. This is an unbiased spatial sample of the same
+  // world-space material, not a second screen-space grain texture.
+  let stochasticAmount = smoothstep(0.32, 0.58, footprint);
+  let pixel = floor(input.clip.xy);
+  let jitter = hash2(pixel + vec2f(19.0, 71.0)) - 0.5;
+  let filteredCoordinate = grainCoordinate + stochasticAmount * (grainDx * jitter.x + grainDy * jitter.y);
+  let grain = grainAppearance(filteredCoordinate);
+  let grainOffset = grain.offset;
+  let grainColor = grain.color;
+  let grainEdge = grain.edge;
+  let roundness = grain.roundness;
+  let detail = 1.0 - smoothstep(0.55, 2.1, footprint);
+  let depthDetail = detail * (1.0 - smoothstep(0.48, 0.90, footprint));
+  let grainHeight = depthDetail * grainEdge * roundness * mix(0.000045, 0.000115, grainColor.x);
   let facet = (grainColor - 0.5) * 0.52 + grainOffset * (0.38 + roundness * 0.42);
   let normal = normalize(macroNormal + vec3f(facet.x, 0.0, facet.y) * detail);
   let displacedWorld = input.world + macroNormal * grainHeight;

@@ -2,6 +2,7 @@ import { SAND, idleStroke } from './config'
 import { InputController } from './input/controller'
 import type { BootMonitor } from './platform/boot'
 import { createGpu } from './platform/gpu'
+import { useMobileGrainFiltering } from './platform/mobile'
 import { drawingBuffer } from './platform/viewport'
 import { SandRenderer } from './render/renderer'
 import { FixedClock } from './simulation/clock'
@@ -11,7 +12,7 @@ import type { InterfaceElements } from './ui/interface'
 export async function startSandboard(ui: InterfaceElements, monitor: BootMonitor) {
   const gpu = await createGpu(ui.canvas, monitor)
   const solver = new SandSolver(gpu.device)
-  const renderer = new SandRenderer(gpu.device, solver, gpu.format)
+  const renderer = new SandRenderer(gpu.device, solver, gpu.format, useMobileGrainFiltering())
   const clock = new FixedClock(SAND.step, SAND.maxSteps)
   const listeners = new AbortController()
   let input: InputController | undefined
