@@ -2,7 +2,9 @@ import { SAND, type Stroke } from '../config'
 import { checkedShader } from '../platform/shader'
 import type { SandSolver } from '../simulation/solver'
 import { SandCamera } from './camera'
+import { CoconutShadow } from './coconut-shadow'
 import { BedLighting } from './lighting'
+import { SandPostProcess } from './postprocess'
 import { surfaceShader } from './shaders'
 
 const LIGHT_ANGLE = -0.8
@@ -11,6 +13,8 @@ export class SandRenderer {
   readonly camera = new SandCamera()
   private readonly uniform: GPUBuffer
   private readonly lighting: BedLighting
+  private readonly shadow: CoconutShadow
+  private readonly post: SandPostProcess
   private readonly indices: GPUBuffer
   private readonly indexCount: number
   private pipeline!: GPURenderPipeline
@@ -20,7 +24,7 @@ export class SandRenderer {
   private depth: GPUTexture | undefined
   private width = 0
   private height = 0
-  private readonly data = new Float32Array(28)
+  private readonly data = new Float32Array(36)
 
   private readonly device: GPUDevice
   private readonly solver: SandSolver
@@ -28,8 +32,10 @@ export class SandRenderer {
   private readonly mobileGrainFiltering: boolean
   constructor(device: GPUDevice, solver: SandSolver, format: GPUTextureFormat, mobileGrainFiltering = false) {
     this.device = device; this.solver = solver; this.format = format; this.mobileGrainFiltering = mobileGrainFiltering
-    this.uniform = device.createBuffer({ label: 'Surface view', size: 112, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST })
+    this.uniform = device.createBuffer({ label: 'Surface view', size: this.data.byteLength, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST })
     this.lighting = new BedLighting(device, solver, this.uniform)
+    this.shadow = new CoconutShadow(device, mobileGrainFiltering)
+    this.post = new SandPostProcess(device, format, format)
     const resolution = solver.resolution
     this.indexCount = (resolution - 1) ** 2 * 6
     const indices = new Uint32Array(this.indexCount)
@@ -46,7 +52,7 @@ export class SandRenderer {
   }
 
   async initialize() {
-    await this.lighting.initialize()
+    await Promise.all([this.lighting.initialize(), this.shadow.initialize(), this.post.initialize()])
     const module = await checkedShader(this.device, 'Granular surface WGSL', surfaceShader)
     this.pipeline = await this.device.createRenderPipelineAsync({ label: 'Granular sand surface', layout: 'auto',
       vertex: { module, entryPoint: 'vertex' }, fragment: { module, entryPoint: this.mobileGrainFiltering ? 'fragmentMobile' : 'fragment', targets: [{ format: this.format }] },
@@ -54,15 +60,21 @@ export class SandRenderer {
       depthStencil: { format: 'depth24plus', depthWriteEnabled: true, depthCompare: 'less' },
     })
     this.groups = this.solver.buffers.map((buffer) => this.device.createBindGroup({ layout: this.pipeline.getBindGroupLayout(0), entries: [
-      { binding: 0, resource: { buffer: this.uniform } }, { binding: 1, resource: { buffer } },
+      { binding: 0, resource: { buffer: this.uniform } },
+      { binding: 1, resource: { buffer } },
       { binding: 3, resource: { buffer: this.lighting.buffer } },
+      { binding: 4, resource: this.shadow.sampler },
+      { binding: 5, resource: this.shadow.texture.createView() },
     ] }))
     this.grainPipeline = await this.device.createRenderPipelineAsync({ label: 'Loose sand grains', layout: 'auto',
       vertex: { module, entryPoint: 'grainVertex' }, fragment: { module, entryPoint: 'grainFragment', targets: [{ format: this.format }] },
       primitive: { topology: 'triangle-list' }, depthStencil: { format: 'depth24plus', depthWriteEnabled: true, depthCompare: 'less' },
     })
     this.grainGroup = this.device.createBindGroup({ layout: this.grainPipeline.getBindGroupLayout(0), entries: [
-      { binding: 0, resource: { buffer: this.uniform } }, { binding: 2, resource: { buffer: this.solver.particles } },
+      { binding: 0, resource: { buffer: this.uniform } },
+      { binding: 2, resource: { buffer: this.solver.particles } },
+      { binding: 4, resource: this.shadow.sampler },
+      { binding: 5, resource: this.shadow.texture.createView() },
     ] })
   }
 
@@ -72,18 +84,27 @@ export class SandRenderer {
     this.width = width; this.height = height
     this.camera.aspect = width / height
     this.depth = this.device.createTexture({ label: 'Surface depth', size: [width, height], format: 'depth24plus', usage: GPUTextureUsage.RENDER_ATTACHMENT })
+    this.post.resize(width, height)
+    this.shadow.resize(width, height, (x, y) => this.camera.screenToBed(x, y, width, height))
   }
 
-  encode(encoder: GPUCommandEncoder, target: GPUTextureView, pointer: Stroke, showPointer = false) {
+  encode(encoder: GPUCommandEncoder, target: GPUTextureView, pointer: Stroke, now: number, showPointer = false) {
     if (!this.depth) throw new Error('Renderer needs a nonzero drawing buffer')
-    this.data.set([...this.camera.eye, this.camera.tanHalfFov, ...this.camera.forward, this.camera.aspect,
-      ...this.camera.right, 0, ...this.camera.up, 0,
+    this.shadow.encode(encoder, now)
+    this.data.set([
+      ...this.camera.eye, this.camera.tanHalfFov,
+      ...this.camera.forward, this.camera.aspect,
+      ...this.camera.right, 0,
+      ...this.camera.up, 0,
       Math.cos(LIGHT_ANGLE), 0.65, Math.sin(LIGHT_ANGLE), 0,
       this.solver.resolution, SAND.extent, this.width, this.height,
-      pointer.to.x, pointer.to.y, pointer.radius, showPointer ? 1 : 0])
+      pointer.to.x, pointer.to.y, pointer.radius, showPointer ? 1 : 0,
+      this.shadow.centerX, this.shadow.centerZ, this.shadow.halfWidth, this.shadow.halfHeight,
+      this.shadow.opacity, 0, 0, 0,
+    ])
     this.device.queue.writeBuffer(this.uniform, 0, this.data)
     this.lighting.encode(encoder, LIGHT_ANGLE)
-    const pass = encoder.beginRenderPass({ label: 'Sand image', colorAttachments: [{ view: target, clearValue: { r: 0.55, g: 0.44, b: 0.29, a: 1 }, loadOp: 'clear', storeOp: 'store' }],
+    const pass = encoder.beginRenderPass({ label: 'Sand image', colorAttachments: [{ view: this.post.target, clearValue: { r: 0.55, g: 0.44, b: 0.29, a: 1 }, loadOp: 'clear', storeOp: 'store' }],
       depthStencilAttachment: { view: this.depth.createView(), depthClearValue: 1, depthLoadOp: 'clear', depthStoreOp: 'discard' },
     })
     pass.setPipeline(this.pipeline)
@@ -94,7 +115,8 @@ export class SandRenderer {
     pass.setBindGroup(0, this.grainGroup)
     pass.draw(6, this.solver.particleCount)
     pass.end()
+    this.post.encode(encoder, target)
   }
 
-  dispose() { this.lighting.dispose(); this.uniform.destroy(); this.indices.destroy(); this.depth?.destroy() }
+  dispose() { this.lighting.dispose(); this.shadow.dispose(); this.post.dispose(); this.uniform.destroy(); this.indices.destroy(); this.depth?.destroy() }
 }

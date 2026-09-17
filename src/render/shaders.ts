@@ -7,12 +7,16 @@ struct View {
   light: vec4f,
   grid: vec4f,
   pointer: vec4f,
+  shadowBounds: vec4f,
+  shadowControl: vec4f,
 }
 @group(0) @binding(0) var<uniform> view: View;
 @group(0) @binding(1) var<storage, read> bed: array<vec4f>;
 struct Grain { position: vec4f, velocity: vec4f }
 @group(0) @binding(2) var<storage, read> grains: array<Grain>;
 @group(0) @binding(3) var<storage, read> lighting: array<vec4f>;
+@group(0) @binding(4) var shadowSampler: sampler;
+@group(0) @binding(5) var shadowTexture: texture_2d<f32>;
 fn lightAt(cell: vec2i) -> vec2f {
   let bounded = vec2u(clamp(cell, vec2i(0), vec2i(i32(view.grid.x) - 1)));
   return lighting[bounded.y * u32(view.grid.x) + bounded.x].xy;
@@ -94,6 +98,32 @@ fn environment(direction: vec3f) -> vec3f {
   let ground = mix(vec3f(0.25, 0.19, 0.13), vec3f(0.52, 0.42, 0.29), smoothstep(-1.0, 0.0, direction.y));
   return select(ground, sky, direction.y >= 0.0);
 }
+fn treeShadow(position: vec2f) -> f32 {
+  let center = view.shadowBounds.xy;
+  let halfSize = view.shadowBounds.zw;
+  let shadowOpacity = view.shadowControl.x;
+  let uv = (position - (center - halfSize)) / (halfSize * 2.0);
+  if (any(uv < vec2f(0.0)) || any(uv > vec2f(1.0))) { return 1.0; }
+  let mask = textureSampleLevel(shadowTexture, shadowSampler, uv, 0.0).x;
+  return 1.0 - mask * shadowOpacity;
+}
+fn sparkleAt(position: vec2f, normal: vec3f, halfway: vec3f, light: vec3f, shade: f32) -> f32 {
+  let cellSize = 0.0044;
+  let cell = floor(position / cellSize);
+  let seed = hash2(cell + vec2f(13.7, 41.3));
+  let selected = smoothstep(0.958, 0.982, seed.x);
+  let centerSeed = hash2(cell + vec2f(73.1, 19.6));
+  let center = (cell + 0.18 + centerSeed * 0.64) * cellSize;
+  let pixelWidth = max(length(dpdx(position)), length(dpdy(position)));
+  let radius = mix(0.00016, 0.00030, seed.y);
+  let speck = 1.0 - smoothstep(radius, radius + max(pixelWidth * 1.35, 0.000035), length(position - center));
+  let orientation = hash2(cell + vec2f(101.9, 7.4)) - 0.5;
+  let microNormal = normalize(normal + vec3f(orientation.x, 0.0, orientation.y) * 0.92);
+  let alignment = pow(max(0.0, dot(microNormal, halfway)), 28.0);
+  let sunlight = max(0.0, dot(normal, light));
+  let sunlit = smoothstep(0.72, 0.94, shade);
+  return selected * speck * sunlit * sunlight * (0.65 + 5.5 * alignment);
+}
 struct FragmentOutput { @location(0) color: vec4f, @builtin(frag_depth) depth: f32 }
 @fragment fn fragment(input: VertexOutput) -> FragmentOutput {
   let position = input.world.xz;
@@ -135,7 +165,8 @@ struct FragmentOutput { @location(0) color: vec4f, @builtin(frag_depth) depth: f
   let cosine = max(0.0, dot(normal, light));
   let viewCosine = max(0.02, dot(normal, towardEye));
   let illumination = illuminationAt(position);
-  let visibility = illumination.x;
+  let shade = treeShadow(position);
+  let visibility = illumination.x * shade;
   let occlusion = illumination.y;
   let microOcclusion = mix(1.0, mix(0.68, 1.0, grainEdge), detail);
   let mineral = mix(vec3f(0.46, 0.315, 0.17), vec3f(0.72, 0.56, 0.33), grainColor.x);
@@ -150,11 +181,12 @@ struct FragmentOutput { @location(0) color: vec4f, @builtin(frag_depth) depth: f
   let geometry = cosine * viewCosine / max((cosine * 0.7 + 0.3) * (viewCosine * 0.7 + 0.3), 0.001);
   let specular = distribution * fresnel * geometry / max(4.0 * cosine * viewCosine, 0.001);
   let diffuse = cosine * (0.84 + 0.16 * (1.0 - viewCosine));
-  let ambient = environment(normal) * (0.24 + 0.16 * macroNormal.y) * occlusion * microOcclusion;
+  let ambient = environment(normal) * (0.24 + 0.16 * macroNormal.y) * occlusion * microOcclusion * mix(0.70, 1.0, shade);
   let direct = vec3f(1.0, 0.89, 0.69) * 2.55 * visibility * microOcclusion;
   let reflected = reflect(-towardEye, normal);
-  let environmentSpecular = environment(reflected) * fresnel * pow(1.0 - roughness, 2.0) * 0.32 * occlusion;
-  var radiance = albedo * (ambient + direct * diffuse) + direct * specular * cosine + environmentSpecular;
+  let environmentSpecular = environment(reflected) * fresnel * pow(1.0 - roughness, 2.0) * 0.32 * occlusion * mix(0.42, 1.0, shade);
+  let sparkle = sparkleAt(position, normal, halfway, light, shade) * mix(0.62, 1.0, detail);
+  var radiance = albedo * (ambient + direct * diffuse) + direct * specular * cosine + environmentSpecular + vec3f(1.0, 0.965, 0.86) * sparkle * 20.0;
   let ringDistance = abs(length(position - view.pointer.xy) - view.pointer.z);
   let ring = (1.0 - smoothstep(0.0003, 0.0008, ringDistance)) * view.pointer.w;
   radiance *= 1.0 - 0.2 * ring;
@@ -204,7 +236,8 @@ struct FragmentOutput { @location(0) color: vec4f, @builtin(frag_depth) depth: f
   let cosine = max(0.0, dot(normal, light));
   let viewCosine = max(0.02, dot(normal, towardEye));
   let illumination = illuminationAt(position);
-  let visibility = illumination.x;
+  let shade = treeShadow(position);
+  let visibility = illumination.x * shade;
   let occlusion = illumination.y;
   let microOcclusion = mix(1.0, mix(0.68, 1.0, grainEdge), detail);
   let mineral = mix(vec3f(0.46, 0.315, 0.17), vec3f(0.72, 0.56, 0.33), grainColor.x);
@@ -219,11 +252,12 @@ struct FragmentOutput { @location(0) color: vec4f, @builtin(frag_depth) depth: f
   let geometry = cosine * viewCosine / max((cosine * 0.7 + 0.3) * (viewCosine * 0.7 + 0.3), 0.001);
   let specular = distribution * fresnel * geometry / max(4.0 * cosine * viewCosine, 0.001);
   let diffuse = cosine * (0.84 + 0.16 * (1.0 - viewCosine));
-  let ambient = environment(normal) * (0.24 + 0.16 * macroNormal.y) * occlusion * microOcclusion;
+  let ambient = environment(normal) * (0.24 + 0.16 * macroNormal.y) * occlusion * microOcclusion * mix(0.70, 1.0, shade);
   let direct = vec3f(1.0, 0.89, 0.69) * 2.55 * visibility * microOcclusion;
   let reflected = reflect(-towardEye, normal);
-  let environmentSpecular = environment(reflected) * fresnel * pow(1.0 - roughness, 2.0) * 0.32 * occlusion;
-  var radiance = albedo * (ambient + direct * diffuse) + direct * specular * cosine + environmentSpecular;
+  let environmentSpecular = environment(reflected) * fresnel * pow(1.0 - roughness, 2.0) * 0.32 * occlusion * mix(0.42, 1.0, shade);
+  let sparkle = sparkleAt(position, normal, halfway, light, shade) * mix(0.62, 1.0, detail);
+  var radiance = albedo * (ambient + direct * diffuse) + direct * specular * cosine + environmentSpecular + vec3f(1.0, 0.965, 0.86) * sparkle * 20.0;
   let ringDistance = abs(length(position - view.pointer.xy) - view.pointer.z);
   let ring = (1.0 - smoothstep(0.0003, 0.0008, ringDistance)) * view.pointer.w;
   radiance *= 1.0 - 0.2 * ring;
@@ -268,9 +302,10 @@ struct GrainFragmentOutput { @location(0) color: vec4f, @builtin(frag_depth) dep
   let fresnel = 0.04 + 0.96 * pow(1.0 - max(0.0, dot(halfway, towardEye)), 5.0);
   let sparkle = pow(max(0.0, dot(normal, halfway)), 36.0) * fresnel;
   let albedo = mix(vec3f(0.46, 0.315, 0.17), vec3f(0.72, 0.56, 0.33), input.tint);
+  let shade = treeShadow(surface.xz);
   let ambient = environment(normal) * 0.34;
-  let direct = vec3f(1.0, 0.89, 0.69) * 2.55 * diffuse;
-  let radiance = albedo * (ambient + direct) + environment(reflect(-towardEye, normal)) * sparkle * 0.55;
+  let direct = vec3f(1.0, 0.89, 0.69) * 2.55 * diffuse * shade;
+  let radiance = albedo * (ambient + direct) + environment(reflect(-towardEye, normal)) * sparkle * 0.55 * smoothstep(0.72, 0.94, shade);
   let projected = project(surface);
   var output: GrainFragmentOutput;
   output.color = vec4f(toSrgb(toneMap(radiance)), 1.0);

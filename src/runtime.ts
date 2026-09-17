@@ -47,7 +47,7 @@ export async function startSandboard(ui: InterfaceElements, monitor: BootMonitor
     resize()
     const encoder = gpu.device.createCommandEncoder()
     solver.encode(encoder, [[], []])
-    renderer.encode(encoder, gpu.context.getCurrentTexture().createView(), idleStroke())
+    renderer.encode(encoder, gpu.context.getCurrentTexture().createView(), idleStroke(), performance.now())
     gpu.device.queue.submit([encoder.finish()])
     await gpu.device.queue.onSubmittedWorkDone()
     monitor.assertHealthy()
@@ -63,7 +63,7 @@ export async function startSandboard(ui: InterfaceElements, monitor: BootMonitor
         const encoder = gpu.device.createCommandEncoder()
         const activeInput = input!
         solver.encode(encoder, Array.from({ length: count }, () => activeInput.strokes.nextBatch()))
-        renderer.encode(encoder, gpu.context.getCurrentTexture().createView(), activeInput.strokes.cursor, activeInput.showPointer)
+        renderer.encode(encoder, gpu.context.getCurrentTexture().createView(), activeInput.strokes.cursor, now, activeInput.showPointer)
         gpu.device.queue.submit([encoder.finish()])
         inFlight = true
         void gpu.device.queue.onSubmittedWorkDone().then(() => { inFlight = false }).catch((error: unknown) => monitor.fail(error))

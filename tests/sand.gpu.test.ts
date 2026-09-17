@@ -262,7 +262,7 @@ test('surface pipeline compiles and renders nonuniform opaque pixels offscreen',
     step(solver, { from: { x: -0.07, y: 0 }, to: { x: 0.07, y: 0 }, velocity: { x: 0.5, y: 0 }, radius: 0.022, pressure: 1, active: true }, 100)
     device.pushErrorScope('validation')
     const encoder = device.createCommandEncoder()
-    renderer.encode(encoder, texture.createView(), idleStroke())
+    renderer.encode(encoder, texture.createView(), idleStroke(), 0)
     encoder.copyTextureToBuffer({ texture }, { buffer: staging, bytesPerRow: 1024 }, [256, 192])
     device.queue.submit([encoder.finish()])
     await staging.mapAsync(GPUMapMode.READ)

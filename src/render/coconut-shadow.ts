@@ -1,0 +1,377 @@
+type Point2 = { x: number; y: number }
+type Vec3 = [number, number, number]
+
+type MeshGeometry = {
+  vertex: GPUBuffer
+  index: GPUBuffer
+  indexCount: number
+}
+
+type ParsedMesh = {
+  positions: Float32Array
+  texcoords: Float32Array
+  indices: Uint32Array
+}
+
+type ParsedTree = {
+  meshes: ParsedMesh[]
+  image: Blob
+  projectedCenter: Point2
+  projectedHalfSize: Point2
+}
+
+type ShadowPlacement = {
+  centerX: number
+  centerZ: number
+  halfWidth: number
+  halfHeight: number
+}
+
+const LIGHT_X = Math.cos(-0.8)
+const LIGHT_Y = 0.65
+const LIGHT_Z = Math.sin(-0.8)
+const SHADOW_RESOLUTION = 384
+const SHADOW_FPS = 30
+const SHADOW_OPACITY = 0.82
+
+type Gltf = {
+  scene: number
+  scenes: Array<{ nodes: number[] }>
+  nodes: Array<{ children?: number[]; mesh?: number; matrix?: number[]; translation?: number[]; scale?: number[]; name?: string }>
+  meshes: Array<{ primitives: Array<{ attributes: { POSITION: number; TEXCOORD_0: number }; indices: number }> }>
+  accessors: Array<{ bufferView: number; byteOffset?: number; componentType: number; count: number; type: string }>
+  bufferViews: Array<{ byteOffset?: number; byteLength: number; byteStride?: number }>
+  images: Array<{ bufferView: number; mimeType: string }>
+}
+
+const shadowShader = `
+struct ShadowView {
+  projected: vec4f,
+  motion: vec4f,
+}
+@group(0) @binding(0) var<uniform> view: ShadowView;
+@group(0) @binding(1) var colorSampler: sampler;
+@group(0) @binding(2) var colorTexture: texture_2d<f32>;
+struct VertexInput {
+  @location(0) position: vec3f,
+  @location(1) uv: vec2f,
+}
+struct VertexOutput {
+  @builtin(position) clip: vec4f,
+  @location(0) uv: vec2f,
+}
+@vertex fn vertex(input: VertexInput) -> VertexOutput {
+  let height = clamp(input.position.y, 0.0, 1.0);
+  let bend = height * height;
+  let phase = view.motion.x;
+  let swayX = (sin(phase * 0.73) * 0.045 + sin(phase * 0.31 + 1.6) * 0.018) * bend;
+  let swayZ = (cos(phase * 0.61 + 0.7) * 0.034 + sin(phase * 0.27) * 0.014) * bend;
+  let twist = sin(phase * 0.43 + height * 2.2) * 0.022 * bend;
+  let cosine = cos(twist);
+  let sine = sin(twist);
+  let rotatedXZ = vec2f(input.position.x * cosine - input.position.z * sine,
+    input.position.x * sine + input.position.z * cosine);
+  let position = vec3f(rotatedXZ.x + swayX, input.position.y, rotatedXZ.y + swayZ);
+  let projected = position.xz - vec2f(${LIGHT_X.toFixed(9)}, ${LIGHT_Z.toFixed(9)}) * (position.y / ${LIGHT_Y.toFixed(9)});
+  let normalized = (projected - view.projected.xy) / view.projected.zw;
+  var output: VertexOutput;
+  output.clip = vec4f(normalized.x, -normalized.y, 0.0, 1.0);
+  output.uv = input.uv;
+  return output;
+}
+@fragment fn fragment(input: VertexOutput) -> @location(0) vec4f {
+  let texel = textureSample(colorTexture, colorSampler, input.uv);
+  let alpha = smoothstep(0.10, 0.55, texel.a);
+  if (alpha <= 0.002) { discard; }
+  return vec4f(alpha, alpha, alpha, alpha);
+}
+`
+
+function identity4() {
+  return new Float32Array([1, 0, 0, 0,
+    0, 1, 0, 0,
+    0, 0, 1, 0,
+    0, 0, 0, 1])
+}
+
+function multiply4(left: Float32Array, right: Float32Array) {
+  const result = new Float32Array(16)
+  for (let column = 0; column < 4; column++) {
+    for (let row = 0; row < 4; row++) {
+      let sum = 0
+      for (let k = 0; k < 4; k++) sum += left[k * 4 + row]! * right[column * 4 + k]!
+      result[column * 4 + row] = sum
+    }
+  }
+  return result
+}
+
+function matrixForNode(node: Gltf['nodes'][number]) {
+  if (node.matrix?.length === 16) return new Float32Array(node.matrix)
+  const matrix = identity4()
+  if (node.scale?.length === 3) {
+    matrix[0] = node.scale[0]!
+    matrix[5] = node.scale[1]!
+    matrix[10] = node.scale[2]!
+  }
+  if (node.translation?.length === 3) {
+    matrix[12] = node.translation[0]!
+    matrix[13] = node.translation[1]!
+    matrix[14] = node.translation[2]!
+  }
+  return matrix
+}
+
+function transformPoint(matrix: Float32Array, x: number, y: number, z: number): Vec3 {
+  return [
+    matrix[0]! * x + matrix[4]! * y + matrix[8]! * z + matrix[12]!,
+    matrix[1]! * x + matrix[5]! * y + matrix[9]! * z + matrix[13]!,
+    matrix[2]! * x + matrix[6]! * y + matrix[10]! * z + matrix[14]!,
+  ]
+}
+
+function componentCount(type: string) {
+  if (type === 'SCALAR') return 1
+  if (type === 'VEC2') return 2
+  if (type === 'VEC3') return 3
+  if (type === 'VEC4') return 4
+  throw new Error(`Unsupported glTF accessor type: ${type}`)
+}
+
+function componentBytes(componentType: number) {
+  if (componentType === 5126 || componentType === 5125) return 4
+  if (componentType === 5123) return 2
+  throw new Error(`Unsupported glTF component type: ${componentType}`)
+}
+
+function accessorFloats(gltf: Gltf, binary: ArrayBuffer, accessorIndex: number) {
+  const accessor = gltf.accessors[accessorIndex]!
+  const bufferView = gltf.bufferViews[accessor.bufferView]!
+  const components = componentCount(accessor.type)
+  const bytes = componentBytes(accessor.componentType)
+  const stride = bufferView.byteStride ?? components * bytes
+  const start = (bufferView.byteOffset ?? 0) + (accessor.byteOffset ?? 0)
+  const data = new DataView(binary)
+  const result = new Float32Array(accessor.count * components)
+  for (let item = 0; item < accessor.count; item++) {
+    for (let component = 0; component < components; component++) {
+      const offset = start + item * stride + component * bytes
+      const value = accessor.componentType === 5126 ? data.getFloat32(offset, true)
+        : accessor.componentType === 5125 ? data.getUint32(offset, true)
+          : data.getUint16(offset, true)
+      result[item * components + component] = value
+    }
+  }
+  return result
+}
+
+function accessorIndices(gltf: Gltf, binary: ArrayBuffer, accessorIndex: number) {
+  const values = accessorFloats(gltf, binary, accessorIndex)
+  const result = new Uint32Array(values.length)
+  for (let index = 0; index < values.length; index++) result[index] = values[index]!
+  return result
+}
+
+function parseGlb(buffer: ArrayBuffer) {
+  const data = new DataView(buffer)
+  if (data.getUint32(0, true) !== 0x46546c67 || data.getUint32(4, true) !== 2) throw new Error('Coconut tree is not a valid glTF 2.0 binary.')
+  let offset = 12
+  let gltf: Gltf | undefined
+  let binary: ArrayBuffer | undefined
+  while (offset < buffer.byteLength) {
+    const length = data.getUint32(offset, true)
+    const type = data.getUint32(offset + 4, true)
+    offset += 8
+    const chunk = buffer.slice(offset, offset + length)
+    offset += length
+    if (type === 0x4e4f534a) gltf = JSON.parse(new TextDecoder().decode(chunk)) as Gltf
+    if (type === 0x004e4942) binary = chunk
+  }
+  if (!gltf || !binary) throw new Error('Coconut tree glTF is missing JSON or binary data.')
+  return { gltf, binary }
+}
+
+async function loadTree(): Promise<ParsedTree> {
+  const response = await fetch('/scene_assets/coconut_tree.glb')
+  if (!response.ok) throw new Error(`Unable to load coconut tree (${response.status}).`)
+  const { gltf, binary } = parseGlb(await response.arrayBuffer())
+
+  const worldMatrices = gltf.nodes.map(() => identity4())
+  const visit = (nodeIndex: number, parent: Float32Array) => {
+    const world = multiply4(parent, matrixForNode(gltf.nodes[nodeIndex]!))
+    worldMatrices[nodeIndex] = world
+    for (const child of gltf.nodes[nodeIndex]!.children ?? []) visit(child, world)
+  }
+  for (const root of gltf.scenes[gltf.scene]!.nodes) visit(root, identity4())
+
+  const rawMeshes: Array<{ positions: Float32Array; texcoords: Float32Array; indices: Uint32Array }> = []
+  let minX = Infinity; let minY = Infinity; let minZ = Infinity
+  let maxX = -Infinity; let maxY = -Infinity; let maxZ = -Infinity
+  for (const [nodeIndex, node] of gltf.nodes.entries()) {
+    if (node.mesh === undefined) continue
+    const primitive = gltf.meshes[node.mesh]!.primitives[0]!
+    const sourcePositions = accessorFloats(gltf, binary, primitive.attributes.POSITION)
+    const texcoords = accessorFloats(gltf, binary, primitive.attributes.TEXCOORD_0)
+    const positions = new Float32Array(sourcePositions.length)
+    for (let index = 0; index < sourcePositions.length; index += 3) {
+      const point = transformPoint(worldMatrices[nodeIndex]!, sourcePositions[index]!, sourcePositions[index + 1]!, sourcePositions[index + 2]!)
+      positions[index] = point[0]; positions[index + 1] = point[1]; positions[index + 2] = point[2]
+      minX = Math.min(minX, point[0]); minY = Math.min(minY, point[1]); minZ = Math.min(minZ, point[2])
+      maxX = Math.max(maxX, point[0]); maxY = Math.max(maxY, point[1]); maxZ = Math.max(maxZ, point[2])
+    }
+    rawMeshes.push({ positions, texcoords, indices: accessorIndices(gltf, binary, primitive.indices) })
+  }
+
+  const height = Math.max(maxY - minY, 1e-6)
+  const centerX = (minX + maxX) * 0.5
+  const centerZ = (minZ + maxZ) * 0.5
+  const meshes = rawMeshes.map((mesh) => {
+    const positions = new Float32Array(mesh.positions.length)
+    for (let index = 0; index < mesh.positions.length; index += 3) {
+      positions[index] = (mesh.positions[index]! - centerX) / height
+      positions[index + 1] = (mesh.positions[index + 1]! - minY) / height
+      positions[index + 2] = (mesh.positions[index + 2]! - centerZ) / height
+    }
+    return { ...mesh, positions }
+  })
+
+  let minProjectedX = Infinity; let minProjectedZ = Infinity
+  let maxProjectedX = -Infinity; let maxProjectedZ = -Infinity
+  for (const mesh of meshes) {
+    for (let index = 0; index < mesh.positions.length; index += 3) {
+      const x = mesh.positions[index]!
+      const y = mesh.positions[index + 1]!
+      const z = mesh.positions[index + 2]!
+      const projectedX = x - LIGHT_X * y / LIGHT_Y
+      const projectedZ = z - LIGHT_Z * y / LIGHT_Y
+      minProjectedX = Math.min(minProjectedX, projectedX); maxProjectedX = Math.max(maxProjectedX, projectedX)
+      minProjectedZ = Math.min(minProjectedZ, projectedZ); maxProjectedZ = Math.max(maxProjectedZ, projectedZ)
+    }
+  }
+  const projectedCenter = { x: (minProjectedX + maxProjectedX) * 0.5, y: (minProjectedZ + maxProjectedZ) * 0.5 }
+  const projectedHalfSize = { x: (maxProjectedX - minProjectedX) * 0.58, y: (maxProjectedZ - minProjectedZ) * 0.58 }
+
+  const imageInfo = gltf.images[0]!
+  const imageView = gltf.bufferViews[imageInfo.bufferView]!
+  const imageStart = imageView.byteOffset ?? 0
+  const image = new Blob([binary.slice(imageStart, imageStart + imageView.byteLength)], { type: imageInfo.mimeType })
+  return { meshes, image, projectedCenter, projectedHalfSize }
+}
+
+function createVertexData(mesh: ParsedMesh) {
+  const vertexCount = mesh.positions.length / 3
+  const data = new Float32Array(vertexCount * 5)
+  for (let vertex = 0; vertex < vertexCount; vertex++) {
+    data[vertex * 5] = mesh.positions[vertex * 3]!
+    data[vertex * 5 + 1] = mesh.positions[vertex * 3 + 1]!
+    data[vertex * 5 + 2] = mesh.positions[vertex * 3 + 2]!
+    data[vertex * 5 + 3] = mesh.texcoords[vertex * 2]!
+    data[vertex * 5 + 4] = mesh.texcoords[vertex * 2 + 1]!
+  }
+  return data
+}
+
+function placement(screenToBed: (x: number, y: number) => Point2, width: number, height: number, mobile: boolean, aspect: number): ShadowPlacement {
+  const centerScreen = mobile ? { x: 0.83, y: 0.17 } : { x: 0.855, y: 0.185 }
+  const center = screenToBed(width * centerScreen.x, height * centerScreen.y)
+  const left = screenToBed(width * (centerScreen.x - (mobile ? 0.27 : 0.22)), height * centerScreen.y)
+  const right = screenToBed(width * (centerScreen.x + (mobile ? 0.27 : 0.22)), height * centerScreen.y)
+  const halfWidth = Math.abs(right.x - left.x) * 0.5
+  const halfHeight = halfWidth / Math.max(aspect, 0.25)
+  return { centerX: center.x, centerZ: center.y, halfWidth, halfHeight }
+}
+
+export class CoconutShadow {
+  readonly sampler: GPUSampler
+  readonly texture: GPUTexture
+  private readonly device: GPUDevice
+  private readonly uniform: GPUBuffer
+  private readonly data = new Float32Array(8)
+  private pipeline!: GPURenderPipeline
+  private group!: GPUBindGroup
+  private geometries: MeshGeometry[] = []
+  private colorTexture?: GPUTexture
+  private projectedCenter: Point2 = { x: 0, y: 0 }
+  private projectedHalfSize: Point2 = { x: 1, y: 1 }
+  private placement: ShadowPlacement = { centerX: 0.18, centerZ: -0.10, halfWidth: 0.11, halfHeight: 0.11 }
+  private lastRender = -Infinity
+  private mobile = false
+
+  constructor(device: GPUDevice, mobile = false) {
+    this.device = device
+    this.mobile = mobile
+    this.uniform = device.createBuffer({ label: 'Coconut shadow view', size: this.data.byteLength, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST })
+    this.texture = device.createTexture({ label: 'Coconut tree shadow', size: [SHADOW_RESOLUTION, SHADOW_RESOLUTION], format: 'rgba8unorm', usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING })
+    this.sampler = device.createSampler({ label: 'Coconut tree shadow sampler', magFilter: 'linear', minFilter: 'linear', addressModeU: 'clamp-to-edge', addressModeV: 'clamp-to-edge' })
+  }
+
+  async initialize() {
+    if (typeof window === 'undefined' || typeof createImageBitmap !== 'function') return
+    const tree = await loadTree()
+    this.projectedCenter = tree.projectedCenter
+    this.projectedHalfSize = tree.projectedHalfSize
+    for (const mesh of tree.meshes) {
+      const vertices = createVertexData(mesh)
+      const vertex = this.device.createBuffer({ label: 'Coconut shadow vertices', size: vertices.byteLength, usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST })
+      const index = this.device.createBuffer({ label: 'Coconut shadow indices', size: mesh.indices.byteLength, usage: GPUBufferUsage.INDEX | GPUBufferUsage.COPY_DST })
+      this.device.queue.writeBuffer(vertex, 0, vertices)
+      this.device.queue.writeBuffer(index, 0, mesh.indices)
+      this.geometries.push({ vertex, index, indexCount: mesh.indices.length })
+    }
+
+    const bitmap = await createImageBitmap(tree.image)
+    this.colorTexture = this.device.createTexture({ label: 'Coconut alpha texture', size: [bitmap.width, bitmap.height], format: 'rgba8unorm', usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.RENDER_ATTACHMENT })
+    this.device.queue.copyExternalImageToTexture({ source: bitmap }, { texture: this.colorTexture }, [bitmap.width, bitmap.height])
+    bitmap.close()
+    const colorSampler = this.device.createSampler({ label: 'Coconut alpha sampler', magFilter: 'linear', minFilter: 'linear', addressModeU: 'repeat', addressModeV: 'repeat' })
+    const module = this.device.createShaderModule({ label: 'Coconut shadow WGSL', code: shadowShader })
+    this.pipeline = await this.device.createRenderPipelineAsync({ label: 'Coconut shadow mask', layout: 'auto',
+      vertex: { module, entryPoint: 'vertex', buffers: [{ arrayStride: 20, attributes: [
+        { shaderLocation: 0, offset: 0, format: 'float32x3' }, { shaderLocation: 1, offset: 12, format: 'float32x2' },
+      ] }] },
+      fragment: { module, entryPoint: 'fragment', targets: [{ format: 'rgba8unorm', blend: {
+        color: { operation: 'max', srcFactor: 'one', dstFactor: 'one' }, alpha: { operation: 'max', srcFactor: 'one', dstFactor: 'one' },
+      } }] },
+      primitive: { topology: 'triangle-list', cullMode: 'none' },
+    })
+    this.group = this.device.createBindGroup({ layout: this.pipeline.getBindGroupLayout(0), entries: [
+      { binding: 0, resource: { buffer: this.uniform } },
+      { binding: 1, resource: colorSampler },
+      { binding: 2, resource: this.colorTexture.createView() },
+    ] })
+  }
+
+  resize(width: number, height: number, screenToBed: (x: number, y: number) => Point2) {
+    const aspect = this.projectedHalfSize.x / Math.max(this.projectedHalfSize.y, 1e-4)
+    this.placement = placement(screenToBed, width, height, this.mobile, aspect)
+  }
+
+  encode(encoder: GPUCommandEncoder, now: number) {
+    if (!this.pipeline || now - this.lastRender < 1000 / SHADOW_FPS) return
+    this.lastRender = now
+    this.data.set([this.projectedCenter.x, this.projectedCenter.y, this.projectedHalfSize.x, this.projectedHalfSize.y, now * 0.001, 0, 0, 0])
+    this.device.queue.writeBuffer(this.uniform, 0, this.data)
+    const pass = encoder.beginRenderPass({ label: 'Coconut tree shadow mask', colorAttachments: [{ view: this.texture.createView(), clearValue: { r: 0, g: 0, b: 0, a: 0 }, loadOp: 'clear', storeOp: 'store' }] })
+    pass.setPipeline(this.pipeline)
+    pass.setBindGroup(0, this.group)
+    for (const geometry of this.geometries) {
+      pass.setVertexBuffer(0, geometry.vertex)
+      pass.setIndexBuffer(geometry.index, 'uint32')
+      pass.drawIndexed(geometry.indexCount)
+    }
+    pass.end()
+  }
+
+  get centerX() { return this.placement.centerX }
+  get centerZ() { return this.placement.centerZ }
+  get halfWidth() { return this.placement.halfWidth }
+  get halfHeight() { return this.placement.halfHeight }
+  get opacity() { return SHADOW_OPACITY }
+
+  dispose() {
+    for (const geometry of this.geometries) { geometry.vertex.destroy(); geometry.index.destroy() }
+    this.colorTexture?.destroy()
+    this.texture.destroy()
+    this.uniform.destroy()
+  }
+}
