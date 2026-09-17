@@ -66,6 +66,10 @@ fn filmicGrade(color: vec3f, uv: vec2f) -> vec3f {
 }
 @fragment fn fragment(input: VertexOutput) -> @location(0) vec4f {
   let texel = postView.texel.xy;
+  let viewport = max(postView.texel.zw, vec2f(1.0));
+  let portraitTame = 1.0 - smoothstep(0.70, 1.10, viewport.x / viewport.y);
+  let glintTexel = texel * mix(1.0, 0.58, portraitTame);
+  let glintGain = mix(1.0, 0.62, portraitTame);
   let base = textureSample(sourceTexture, postSampler, input.uv).rgb;
   let offsets = array<vec2f, 16>(
     vec2f(1.3, 0.0), vec2f(-1.3, 0.0), vec2f(0.0, 1.3), vec2f(0.0, -1.3),
@@ -81,37 +85,37 @@ fn filmicGrade(color: vec3f, uv: vec2f) -> vec3f {
   let bloomed = clamp(base + bloom * 2.15, vec3f(0.0), vec3f(1.0));
   let color = filmicGrade(bloomed, input.uv);
 
-  let glintCenter = textureSample(glintTexture, postSampler, input.uv).r;
+  let glintCenter = textureSample(glintTexture, postSampler, input.uv).r * glintGain;
 
-  let hx1p = textureSample(glintTexture, postSampler, input.uv + vec2f(texel.x, 0.0)).r;
-  let hx1m = textureSample(glintTexture, postSampler, input.uv - vec2f(texel.x, 0.0)).r;
-  let hy1p = textureSample(glintTexture, postSampler, input.uv + vec2f(0.0, texel.y)).r;
-  let hy1m = textureSample(glintTexture, postSampler, input.uv - vec2f(0.0, texel.y)).r;
-  let hx2p = textureSample(glintTexture, postSampler, input.uv + vec2f(texel.x * 2.0, 0.0)).r;
-  let hx2m = textureSample(glintTexture, postSampler, input.uv - vec2f(texel.x * 2.0, 0.0)).r;
-  let hy2p = textureSample(glintTexture, postSampler, input.uv + vec2f(0.0, texel.y * 2.0)).r;
-  let hy2m = textureSample(glintTexture, postSampler, input.uv - vec2f(0.0, texel.y * 2.0)).r;
-  let hx3p = textureSample(glintTexture, postSampler, input.uv + vec2f(texel.x * 3.0, 0.0)).r;
-  let hx3m = textureSample(glintTexture, postSampler, input.uv - vec2f(texel.x * 3.0, 0.0)).r;
-  let hy3p = textureSample(glintTexture, postSampler, input.uv + vec2f(0.0, texel.y * 3.0)).r;
-  let hy3m = textureSample(glintTexture, postSampler, input.uv - vec2f(0.0, texel.y * 3.0)).r;
-  let hx4p = textureSample(glintTexture, postSampler, input.uv + vec2f(texel.x * 4.5, 0.0)).r;
-  let hx4m = textureSample(glintTexture, postSampler, input.uv - vec2f(texel.x * 4.5, 0.0)).r;
-  let hy4p = textureSample(glintTexture, postSampler, input.uv + vec2f(0.0, texel.y * 4.5)).r;
-  let hy4m = textureSample(glintTexture, postSampler, input.uv - vec2f(0.0, texel.y * 4.5)).r;
+  let hx1p = textureSample(glintTexture, postSampler, input.uv + vec2f(glintTexel.x, 0.0)).r * glintGain;
+  let hx1m = textureSample(glintTexture, postSampler, input.uv - vec2f(glintTexel.x, 0.0)).r * glintGain;
+  let hy1p = textureSample(glintTexture, postSampler, input.uv + vec2f(0.0, glintTexel.y)).r * glintGain;
+  let hy1m = textureSample(glintTexture, postSampler, input.uv - vec2f(0.0, glintTexel.y)).r * glintGain;
+  let hx2p = textureSample(glintTexture, postSampler, input.uv + vec2f(glintTexel.x * 2.0, 0.0)).r * glintGain;
+  let hx2m = textureSample(glintTexture, postSampler, input.uv - vec2f(glintTexel.x * 2.0, 0.0)).r * glintGain;
+  let hy2p = textureSample(glintTexture, postSampler, input.uv + vec2f(0.0, glintTexel.y * 2.0)).r * glintGain;
+  let hy2m = textureSample(glintTexture, postSampler, input.uv - vec2f(0.0, glintTexel.y * 2.0)).r * glintGain;
+  let hx3p = textureSample(glintTexture, postSampler, input.uv + vec2f(glintTexel.x * 3.0, 0.0)).r * glintGain;
+  let hx3m = textureSample(glintTexture, postSampler, input.uv - vec2f(glintTexel.x * 3.0, 0.0)).r * glintGain;
+  let hy3p = textureSample(glintTexture, postSampler, input.uv + vec2f(0.0, glintTexel.y * 3.0)).r * glintGain;
+  let hy3m = textureSample(glintTexture, postSampler, input.uv - vec2f(0.0, glintTexel.y * 3.0)).r * glintGain;
+  let hx4p = textureSample(glintTexture, postSampler, input.uv + vec2f(glintTexel.x * 4.5, 0.0)).r * glintGain;
+  let hx4m = textureSample(glintTexture, postSampler, input.uv - vec2f(glintTexel.x * 4.5, 0.0)).r * glintGain;
+  let hy4p = textureSample(glintTexture, postSampler, input.uv + vec2f(0.0, glintTexel.y * 4.5)).r * glintGain;
+  let hy4m = textureSample(glintTexture, postSampler, input.uv - vec2f(0.0, glintTexel.y * 4.5)).r * glintGain;
 
-  let d11 = textureSample(glintTexture, postSampler, input.uv + texel).r;
-  let d12 = textureSample(glintTexture, postSampler, input.uv + vec2f(-texel.x, texel.y)).r;
-  let d13 = textureSample(glintTexture, postSampler, input.uv + vec2f(texel.x, -texel.y)).r;
-  let d14 = textureSample(glintTexture, postSampler, input.uv - texel).r;
-  let d21 = textureSample(glintTexture, postSampler, input.uv + texel * 2.0).r;
-  let d22 = textureSample(glintTexture, postSampler, input.uv + vec2f(-texel.x * 2.0, texel.y * 2.0)).r;
-  let d23 = textureSample(glintTexture, postSampler, input.uv + vec2f(texel.x * 2.0, -texel.y * 2.0)).r;
-  let d24 = textureSample(glintTexture, postSampler, input.uv - texel * 2.0).r;
-  let d31 = textureSample(glintTexture, postSampler, input.uv + texel * 3.0).r;
-  let d32 = textureSample(glintTexture, postSampler, input.uv + vec2f(-texel.x * 3.0, texel.y * 3.0)).r;
-  let d33 = textureSample(glintTexture, postSampler, input.uv + vec2f(texel.x * 3.0, -texel.y * 3.0)).r;
-  let d34 = textureSample(glintTexture, postSampler, input.uv - texel * 3.0).r;
+  let d11 = textureSample(glintTexture, postSampler, input.uv + glintTexel).r * glintGain;
+  let d12 = textureSample(glintTexture, postSampler, input.uv + vec2f(-glintTexel.x, glintTexel.y)).r * glintGain;
+  let d13 = textureSample(glintTexture, postSampler, input.uv + vec2f(glintTexel.x, -glintTexel.y)).r * glintGain;
+  let d14 = textureSample(glintTexture, postSampler, input.uv - glintTexel).r * glintGain;
+  let d21 = textureSample(glintTexture, postSampler, input.uv + glintTexel * 2.0).r * glintGain;
+  let d22 = textureSample(glintTexture, postSampler, input.uv + vec2f(-glintTexel.x * 2.0, glintTexel.y * 2.0)).r * glintGain;
+  let d23 = textureSample(glintTexture, postSampler, input.uv + vec2f(glintTexel.x * 2.0, -glintTexel.y * 2.0)).r * glintGain;
+  let d24 = textureSample(glintTexture, postSampler, input.uv - glintTexel * 2.0).r * glintGain;
+  let d31 = textureSample(glintTexture, postSampler, input.uv + glintTexel * 3.0).r * glintGain;
+  let d32 = textureSample(glintTexture, postSampler, input.uv + vec2f(-glintTexel.x * 3.0, glintTexel.y * 3.0)).r * glintGain;
+  let d33 = textureSample(glintTexture, postSampler, input.uv + vec2f(glintTexel.x * 3.0, -glintTexel.y * 3.0)).r * glintGain;
+  let d34 = textureSample(glintTexture, postSampler, input.uv - glintTexel * 3.0).r * glintGain;
 
   let crossTight = (hx1p + hx1m + hy1p + hy1m) * 0.20
     + (hx2p + hx2m + hy2p + hy2m) * 0.14
@@ -133,11 +137,11 @@ fn filmicGrade(color: vec3f, uv: vec2f) -> vec3f {
   let smearMask = smoothstep(0.008, 0.070, smear + glintCenter * 0.22);
   let warmWhite = vec3f(1.0, 0.998, 0.988);
   let solarTint = vec3f(1.0, 0.992, 0.95);
-  var composite = color + solarTint * smear * 0.16;
-  composite += warmWhite * star * 0.10;
-  composite = mix(composite, warmWhite, coreMask * 0.82);
-  composite += solarTint * streakMask * 0.07;
-  composite += vec3f(1.0, 0.99, 0.94) * smearMask * 0.06;
+  var composite = color + solarTint * smear * mix(0.16, 0.08, portraitTame);
+  composite += warmWhite * star * mix(0.10, 0.05, portraitTame);
+  composite = mix(composite, warmWhite, coreMask * mix(0.82, 0.50, portraitTame));
+  composite += solarTint * streakMask * mix(0.07, 0.035, portraitTame);
+  composite += vec3f(1.0, 0.99, 0.94) * smearMask * mix(0.06, 0.03, portraitTame);
   return vec4f(clamp(composite, vec3f(0.0), vec3f(1.0)), 1.0);
 }
 `
@@ -214,7 +218,7 @@ export class SandPostProcess {
       { binding: 2, resource: { buffer: this.uniform } },
       { binding: 3, resource: this.glintSceneView },
     ] })
-    this.device.queue.writeBuffer(this.uniform, 0, new Float32Array([1 / width, 1 / height, 0, 0]))
+    this.device.queue.writeBuffer(this.uniform, 0, new Float32Array([1 / width, 1 / height, width, height]))
   }
 
   get target() {
