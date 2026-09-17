@@ -50,6 +50,21 @@ describe('Finger sampling', () => {
     expect(length).toBeCloseTo(0.1)
     expect(queue.next().active).toBe(false)
   })
+  test('preserves real gesture speed through spatial subdivision', () => {
+    const velocityFor = (durationMs: number) => {
+      const queue = new StrokeQueue()
+      queue.begin({ x: 0, y: 0 }, 0.7, 1000)
+      queue.move({ x: 0.1, y: 0 }, 0.7, 1000 + durationMs)
+      queue.end()
+      queue.next()
+      return queue.next().velocity.x
+    }
+    const fast = velocityFor(100)
+    const slow = velocityFor(1000)
+    expect(fast).toBeCloseTo(1, 5)
+    expect(slow).toBeCloseTo(0.1, 5)
+    expect(fast / slow).toBeCloseTo(10, 5)
+  })
   test('never bridges separate gestures', () => {
     const queue = new StrokeQueue()
     queue.begin({ x: -0.1, y: 0 }, 0.6); queue.end()

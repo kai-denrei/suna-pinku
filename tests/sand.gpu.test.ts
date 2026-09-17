@@ -64,7 +64,7 @@ test('actual WGSL preserves mass, excavates a groove, deposits banks, and settle
   await solver.initialize()
   try {
     const initial = await readState(solver)
-    const stroke: Stroke = { from: { x: -0.06, y: 0 }, to: { x: 0.06, y: 0 }, radius: 0.014, pressure: 0.8, active: true }
+    const stroke: Stroke = { from: { x: -0.06, y: 0 }, to: { x: 0.06, y: 0 }, velocity: { x: 0.45, y: 0 }, radius: 0.014, pressure: 0.8, active: true }
     step(solver, stroke, 80)
     const pressed = await readState(solver)
     const airborne = await particleMass(solver)
@@ -149,6 +149,34 @@ test.each([-0.1, 0, 0.1])('grain impacts respect slope %s and return their mass 
   } finally { solver.dispose() }
 })
 
+test('gesture speed changes bed momentum and airborne mass while conserving sand', async () => {
+  const slow = new SandSolver(device, 128)
+  const fast = new SandSolver(device, 128)
+  await Promise.all([slow.initialize(), fast.initialize()])
+  try {
+    const slowInitial = await readState(slow)
+    const fastInitial = await readState(fast)
+    const base = { from: { x: -0.055, y: 0 }, to: { x: 0.055, y: 0 }, radius: 0.014, pressure: 0.82, active: true }
+    step(slow, { ...base, velocity: { x: 0.08, y: 0 } }, 18)
+    step(fast, { ...base, velocity: { x: 1.1, y: 0 } }, 18)
+    const slowState = await readState(slow)
+    const fastState = await readState(fast)
+    const slowAirborne = await particleMass(slow)
+    const fastAirborne = await particleMass(fast)
+    let slowMomentum = 0
+    let fastMomentum = 0
+    for (let index = 0; index < slowState.length; index += 4) {
+      slowMomentum += Math.hypot(slowState[index + 2], slowState[index + 3])
+      fastMomentum += Math.hypot(fastState[index + 2], fastState[index + 3])
+    }
+    expect(fastMomentum).toBeGreaterThan(slowMomentum * 1.15)
+    expect(fastAirborne).toBeGreaterThan(slowAirborne)
+    expect(Math.abs((volume(slowState) + slowAirborne) / volume(slowInitial) - 1)).toBeLessThan(0.000004)
+    expect(Math.abs((volume(fastState) + fastAirborne) / volume(fastInitial) - 1)).toBeLessThan(0.000004)
+    expect(errors).toEqual([])
+  } finally { slow.dispose(); fast.dispose() }
+})
+
 test('horizon lighting leaves planes open, occludes trenches, and refreshes after reset and paired steps', async () => {
   const solver = new SandSolver(device, 64)
   await solver.initialize()
@@ -211,7 +239,7 @@ test('surface pipeline compiles and renders nonuniform opaque pixels offscreen',
   try {
     await renderer.initialize()
     renderer.resize(256, 192)
-    step(solver, { from: { x: -0.07, y: 0 }, to: { x: 0.07, y: 0 }, radius: 0.022, pressure: 1, active: true }, 100)
+    step(solver, { from: { x: -0.07, y: 0 }, to: { x: 0.07, y: 0 }, velocity: { x: 0.5, y: 0 }, radius: 0.022, pressure: 1, active: true }, 100)
     device.pushErrorScope('validation')
     const encoder = device.createCommandEncoder()
     renderer.encode(encoder, texture.createView(), idleStroke())

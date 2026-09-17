@@ -7,6 +7,7 @@ struct Params {
   physics: vec4f,
   start: vec4f,
   end: vec4f,
+  motion: vec4f,
 }
 @group(0) @binding(0) var<uniform> params: Params;
 @group(0) @binding(1) var<storage, read> source: array<vec4f>;
@@ -24,12 +25,14 @@ fn address(cell: vec2i) -> u32 {
 fn location(cell: vec2i) -> vec2f {
   return (vec2f(cell) + 0.5) * params.grid.y - params.grid.z * 0.5;
 }
-fn pressureAt(position: vec2f) -> f32 {
+fn toolAt(position: vec2f) -> vec4f {
   let segment = params.end.xy - params.start.xy;
   let along = clamp(dot(position - params.start.xy, segment) / max(dot(segment, segment), 1e-10), 0.0, 1.0);
-  let distance = length(position - params.start.xy - along * segment) / params.start.z;
-  let shape = max(0.0, 1.0 - distance * distance);
-  return shape * shape * params.start.w * params.end.z;
+  let offset = position - params.start.xy - along * segment;
+  let distance = length(offset) / params.start.z;
+  let envelope = max(0.0, 1.0 - distance * distance);
+  let coverage = envelope * envelope;
+  return vec4f(coverage * params.start.w * params.end.z, coverage, offset);
 }
 @compute @workgroup_size(8, 8)
 fn initialize(@builtin(global_invocation_id) invocation: vec3u) {
@@ -44,22 +47,46 @@ fn initialize(@builtin(global_invocation_id) invocation: vec3u) {
 fn transport(@builtin(global_invocation_id) invocation: vec3u) {
   if (any(invocation.xy >= vec2u(u32(params.grid.x)))) { return; }
   let cell = vec2i(invocation.xy);
+  let position = location(cell);
   let center = source[address(cell)];
-  let pressure = pressureAt(location(cell));
-  let effectiveHeight = center.x + pressure;
+  let contact = toolAt(position);
+  let effectiveHeight = center.x + contact.x;
+  let motionDirection = params.motion.xy / max(params.motion.z, 1e-8);
+  let speedResponse = params.motion.z / (params.motion.z + 0.35);
   var outgoing = Flux(vec4f(0.0), vec4f(0.0));
+  var escape = Flux(vec4f(0.0), vec4f(0.0));
   for (var axis = 0u; axis < 8u; axis++) {
     let neighbor = cell + neighbors[axis];
     if (any(neighbor < vec2i(0)) || any(neighbor >= vec2i(i32(params.grid.x)))) { continue; }
     let other = source[address(neighbor)];
-    let otherPressure = pressureAt(location(neighbor));
+    let otherContact = toolAt(location(neighbor));
     let friction = mix(params.physics.z, params.physics.w, clamp(max(center.y, other.y) * 35.0, 0.0, 1.0));
     let linkLength = select(1.0, 1.41421356, axis >= 4u);
     let weight = select(0.66666667, 0.16666667, axis >= 4u);
-    let threshold = friction * params.grid.y * linkLength * select(1.0, 0.08, max(pressure, otherPressure) > 0.0001);
-    let amount = max(0.0, effectiveHeight - other.x - otherPressure - threshold) * params.grid.w * params.end.w * weight;
-    if (axis < 4u) { outgoing.axial[axis] = amount; }
-    else { outgoing.diagonal[axis - 4u] = amount; }
+    let axisDirection = vec2f(neighbors[axis]) / linkLength;
+    let forward = max(0.0, dot(axisDirection, motionDirection));
+    let threshold = friction * params.grid.y * linkLength * select(1.0, 0.08, max(contact.x, otherContact.x) > 0.0001);
+    var amount = max(0.0, effectiveHeight - other.x - otherContact.x - threshold) * params.grid.w * params.end.w * weight;
+    amount *= 1.0 + contact.y * speedResponse * forward * 0.9;
+    let edge = max(0.0, contact.x - otherContact.x) / max(contact.x, 1e-7);
+    let sideways = contact.y * (1.0 - abs(dot(axisDirection, motionDirection))) * 0.06;
+    let escapeWeight = (edge + sideways) * (1.0 + speedResponse * forward * 0.8) * weight;
+    if (axis < 4u) {
+      outgoing.axial[axis] = amount;
+      escape.axial[axis] = escapeWeight;
+    } else {
+      outgoing.diagonal[axis - 4u] = amount;
+      escape.diagonal[axis - 4u] = escapeWeight;
+    }
+  }
+  let targetHeight = params.physics.x - contact.x;
+  let overlap = max(0.0, center.x - targetHeight);
+  let existing = totalFlux(outgoing);
+  let escapeTotal = totalFlux(escape);
+  let extra = max(0.0, overlap - existing);
+  if (extra > 0.0 && escapeTotal > 1e-8) {
+    outgoing.axial += escape.axial * (extra / escapeTotal);
+    outgoing.diagonal += escape.diagonal * (extra / escapeTotal);
   }
   let total = totalFlux(outgoing);
   let available = max(0.0, center.x - params.physics.y);
@@ -84,15 +111,20 @@ fn integrate(@builtin(global_invocation_id) invocation: vec3u) {
   let transferred = f32(atomicExchange(&exchange[index], 0)) * 1e-9;
   let height = current.x + totalFlux(incoming) - totalFlux(outgoing) + transferred;
   let moved = totalFlux(incoming) + totalFlux(outgoing);
-  let activity = max(current.y * exp(-params.grid.w * 10.0), moved / params.grid.w);
-  let velocity = (fluxVector(outgoing) - fluxVector(incoming)) * params.grid.y / max(height * params.grid.w, 1e-7);
+  let contact = toolAt(location(cell));
+  let contactActivity = contact.y * params.start.w * params.motion.z * 0.004;
+  let activity = max(max(current.y * exp(-params.grid.w * 10.0), moved / params.grid.w), contactActivity);
+  let transportVelocity = (fluxVector(outgoing) - fluxVector(incoming)) * params.grid.y / max(height * params.grid.w, 1e-7);
+  let slipCoupling = 0.38 / (1.0 + params.motion.z * 0.30);
+  let toolVelocity = params.motion.xy * contact.y * params.start.w * slipCoupling;
+  let velocity = transportVelocity + toolVelocity;
   destination[index] = vec4f(height, activity, mix(current.zw, velocity, 0.4));
 }
 `;
 
 export const particleShader = `
 ${fluxLayout}
-struct Params { grid: vec4f, physics: vec4f, start: vec4f, end: vec4f }
+struct Params { grid: vec4f, physics: vec4f, start: vec4f, end: vec4f, motion: vec4f }
 struct Grain { position: vec4f, velocity: vec4f }
 @group(0) @binding(0) var<uniform> params: Params;
 @group(0) @binding(1) var<storage, read> bed: array<vec4f>;
@@ -163,14 +195,24 @@ fn animate(@builtin(global_invocation_id) invocation: vec3u) {
     let flow = flux[cell];
     let moved = totalFlux(flow);
     let reserve = bed[cell].x - moved - params.physics.y;
-    if (moved > 0.00001 && reserve > 0.000008 && random(seed) < 0.18) {
+    let bedVelocity = bed[cell].zw;
+    let speed = length(bedVelocity);
+    let agitation = smoothstep(0.055, 0.24, speed);
+    let sourceMoved = max(moved, bed[cell].y * params.grid.w * 0.35);
+    let mass = mix(0.0000025, 0.0000055, random(seed + 13u));
+    let launchMass = sourceMoved * f32(stride) * agitation * 0.004;
+    let launchChance = min(1.0, launchMass / mass);
+    if (reserve > mass * 1.2 && random(seed) < launchChance) {
       let position = (vec2f(f32(cell % u32(params.grid.x)), f32(cell / u32(params.grid.x))) + 0.5) * params.grid.y - params.grid.z * 0.5;
       let transport = fluxVector(flow);
-      let direction = transport / max(length(transport), 1e-9);
-      let speed = min(0.12, moved / params.grid.w * 8.0);
-      grain.position = vec4f(position.x, bed[cell].x + 0.0003, position.y, 0.000004);
-      grain.velocity = vec4f(direction.x * speed, 0.035 + random(seed + 7u) * 0.075, direction.y * speed, 0.0);
-      atomicSub(&exchange[cell], 4000);
+      let direction = select(transport / max(length(transport), 1e-9), bedVelocity / max(speed, 1e-9), speed > 0.01);
+      let side = vec2f(-direction.y, direction.x);
+      let scatter = (random(seed + 31u) - 0.5) * (0.02 + speed * 0.12);
+      let horizontal = bedVelocity * (0.68 + random(seed + 5u) * 0.22) + direction * (0.018 + speed * 0.12) + side * scatter;
+      let lift = 0.018 + sqrt(max(speed, 0.0)) * (0.16 + random(seed + 7u) * 0.055);
+      grain.position = vec4f(position.x, bed[cell].x + 0.0003, position.y, mass);
+      grain.velocity = vec4f(horizontal.x, lift, horizontal.y, 0.0);
+      atomicSub(&exchange[cell], i32(round(mass * 1e9)));
     }
   }
   grains[index] = grain;

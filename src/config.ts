@@ -6,5 +6,15 @@ export const SAND = {
 } as const
 
 export type Point = { x: number; y: number }
-export type Stroke = { from: Point; to: Point; radius: number; pressure: number; active: boolean }
-export const idleStroke = (): Stroke => ({ from: { x: 0, y: 0 }, to: { x: 0, y: 0 }, radius: SAND.radius, pressure: 0, active: false })
+export type Stroke = {
+  from: Point
+  to: Point
+  velocity: Point
+  radius: number
+  pressure: number
+  active: boolean
+}
+export const idleStroke = (): Stroke => ({
+  from: { x: 0, y: 0 }, to: { x: 0, y: 0 }, velocity: { x: 0, y: 0 },
+  radius: SAND.radius, pressure: 0, active: false,
+})

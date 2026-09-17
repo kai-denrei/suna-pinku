@@ -15,7 +15,7 @@ export class SandSolver {
   private groups: GPUBindGroup[][] = []
   private current = 0
   private generation = 0
-  private readonly data = new Float32Array(16)
+  private readonly data = new Float32Array(20)
   readonly byteLength: number
 
   readonly device: GPUDevice
@@ -29,7 +29,7 @@ export class SandSolver {
     this.particleCount = Math.min(SAND.particles, resolution * resolution)
     this.particles = device.createBuffer({ label: 'Mass carrying grains', size: this.particleCount * 32, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST })
     this.exchange = device.createBuffer({ label: 'Fixed-point grain exchange', size: resolution * resolution * 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST })
-    this.uniforms = Array.from({ length: SAND.maxSteps }, () => device.createBuffer({ size: 64, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST }))
+    this.uniforms = Array.from({ length: SAND.maxSteps }, () => device.createBuffer({ size: 80, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST }))
   }
   get state() { return this.buffers[this.current] }
   get stateIndex() { return this.current }
@@ -67,7 +67,8 @@ export class SandSolver {
     this.data.set([this.resolution, SAND.extent / this.resolution, SAND.extent, SAND.step,
       SAND.depth, SAND.floor, SAND.repose, SAND.dynamicRepose,
       stroke.from.x, stroke.from.y, stroke.radius, stroke.active ? stroke.pressure : 0,
-      stroke.to.x, stroke.to.y, SAND.indentation, SAND.rate])
+      stroke.to.x, stroke.to.y, SAND.indentation, SAND.rate,
+      stroke.velocity.x, stroke.velocity.y, Math.hypot(stroke.velocity.x, stroke.velocity.y), 0])
     this.device.queue.writeBuffer(this.uniforms[slot], 0, this.data)
   }
 

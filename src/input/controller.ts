@@ -22,18 +22,18 @@ export class InputController {
       this.pointerId = event.pointerId
       canvas.setPointerCapture(event.pointerId)
       canvas.focus({ preventScroll: true })
-      this.strokes.begin(position(event), pressure(event))
+      this.strokes.begin(position(event), pressure(event), event.timeStamp)
       this.showPointer = false
       ui.hint.classList.add('hidden')
     }, { signal })
     canvas.addEventListener('pointermove', (event) => {
       if (this.pointerId !== undefined && event.pointerId !== this.pointerId) return
       const samples = event.getCoalescedEvents?.() ?? []
-      for (const sample of samples.length ? samples : [event]) this.strokes.move(position(sample), pressure(sample))
+      for (const sample of samples.length ? samples : [event]) this.strokes.move(position(sample), pressure(sample), sample.timeStamp)
     }, { signal })
     canvas.addEventListener('pointerup', (event) => {
       if (event.pointerId !== this.pointerId) return
-      this.strokes.move(position(event), pressure(event))
+      this.strokes.move(position(event), pressure(event), event.timeStamp)
       this.strokes.end()
       this.pointerId = undefined
       canvas.releasePointerCapture(event.pointerId)
@@ -51,14 +51,14 @@ export class InputController {
       if (event.key.toLowerCase() === 'l' && !event.repeat) turnLight()
       if (event.code === 'Space') {
         event.preventDefault()
-        if (!this.keyboardDrawing) { this.strokes.begin(this.strokes.position, 0.75); this.keyboardDrawing = true }
+        if (!this.keyboardDrawing) { this.strokes.begin(this.strokes.position, 0.75, event.timeStamp); this.keyboardDrawing = true }
       }
       const movement: Record<string, [number, number]> = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] }
       const direction = movement[event.key]
       if (direction) {
         event.preventDefault()
         this.showPointer = true
-        this.strokes.move({ x: this.strokes.position.x + direction[0] * 0.003, y: this.strokes.position.y + direction[1] * 0.003 }, 0.75)
+        this.strokes.move({ x: this.strokes.position.x + direction[0] * 0.003, y: this.strokes.position.y + direction[1] * 0.003 }, 0.75, event.timeStamp)
       }
       if (event.key === '[' || event.key === ']') {
         ui.radius.value = String(Number(ui.radius.value) + (event.key === '[' ? -1 : 1))

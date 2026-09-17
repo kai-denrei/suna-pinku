@@ -61,7 +61,14 @@ fn toneMap(color: vec3f) -> vec3f {
 fn toSrgb(color: vec3f) -> vec3f {
   return select(color * 12.92, 1.055 * pow(max(color, vec3f(0.0)), vec3f(1.0 / 2.4)) - 0.055, color > vec3f(0.0031308));
 }
-@fragment fn fragment(input: VertexOutput) -> @location(0) vec4f {
+fn environment(direction: vec3f) -> vec3f {
+  let upward = max(direction.y, 0.0);
+  let sky = mix(vec3f(0.72, 0.67, 0.57), vec3f(0.42, 0.56, 0.78), pow(upward, 0.45));
+  let ground = mix(vec3f(0.25, 0.19, 0.13), vec3f(0.52, 0.42, 0.29), smoothstep(-1.0, 0.0, direction.y));
+  return select(ground, sky, direction.y >= 0.0);
+}
+struct FragmentOutput { @location(0) color: vec4f, @builtin(frag_depth) depth: f32 }
+@fragment fn fragment(input: VertexOutput) -> FragmentOutput {
   let position = input.world.xz;
   let spacing = view.grid.y / view.grid.x;
   let heightLeft = stateAt(position - vec2f(spacing, 0.0)).x;
@@ -90,20 +97,24 @@ fn toSrgb(color: vec3f) -> vec3f {
   }
   let boundary = sqrt(second) - sqrt(nearest);
   let grainEdge = smoothstep(0.015, 0.13, boundary);
-  let facet = (grainColor - 0.5) * 0.65 + grainOffset * 0.45;
+  let roundness = sqrt(max(0.0, 1.0 - min(nearest / 0.42, 1.0)));
+  let grainHeight = detail * grainEdge * roundness * mix(0.000045, 0.000115, grainColor.x);
+  let facet = (grainColor - 0.5) * 0.52 + grainOffset * (0.38 + roundness * 0.42);
   let normal = normalize(macroNormal + vec3f(facet.x, 0.0, facet.y) * detail);
+  let displacedWorld = input.world + macroNormal * grainHeight;
   let light = normalize(view.light.xyz);
-  let towardEye = normalize(view.eye.xyz - input.world);
+  let towardEye = normalize(view.eye.xyz - displacedWorld);
   let halfway = normalize(light + towardEye);
   let cosine = max(0.0, dot(normal, light));
   let viewCosine = max(0.02, dot(normal, towardEye));
   let illumination = illuminationAt(position);
   let visibility = illumination.x;
   let occlusion = illumination.y;
+  let microOcclusion = mix(1.0, mix(0.68, 1.0, grainEdge), detail);
   let mineral = mix(vec3f(0.46, 0.315, 0.17), vec3f(0.72, 0.56, 0.33), grainColor.x);
   let darkGrain = mix(1.0, 0.3, smoothstep(0.94, 0.985, grainColor.y));
-  let albedo = mix(vec3f(0.59, 0.435, 0.25), mineral * darkGrain * mix(0.56, 1.0, grainEdge), detail);
-  let roughness = mix(0.76, 0.44, grainColor.y * detail);
+  let albedo = mix(vec3f(0.59, 0.435, 0.25), mineral * darkGrain * mix(0.62, 1.0, grainEdge), detail);
+  let roughness = mix(0.80, 0.42, grainColor.y * detail);
   let alphaSquared = pow(roughness, 4.0);
   let normalHalf = max(0.0, dot(normal, halfway));
   let denominator = normalHalf * normalHalf * (alphaSquared - 1.0) + 1.0;
@@ -112,37 +123,62 @@ fn toSrgb(color: vec3f) -> vec3f {
   let geometry = cosine * viewCosine / max((cosine * 0.7 + 0.3) * (viewCosine * 0.7 + 0.3), 0.001);
   let specular = distribution * fresnel * geometry / max(4.0 * cosine * viewCosine, 0.001);
   let diffuse = cosine * (0.84 + 0.16 * (1.0 - viewCosine));
-  let sky = vec3f(0.60, 0.70, 0.86) * (0.22 + 0.18 * macroNormal.y) * occlusion;
-  let direct = vec3f(1.0, 0.89, 0.69) * 2.55 * visibility;
-  var radiance = albedo * (sky + direct * diffuse) + direct * specular * cosine;
+  let ambient = environment(normal) * (0.24 + 0.16 * macroNormal.y) * occlusion * microOcclusion;
+  let direct = vec3f(1.0, 0.89, 0.69) * 2.55 * visibility * microOcclusion;
+  let reflected = reflect(-towardEye, normal);
+  let environmentSpecular = environment(reflected) * fresnel * pow(1.0 - roughness, 2.0) * 0.32 * occlusion;
+  var radiance = albedo * (ambient + direct * diffuse) + direct * specular * cosine + environmentSpecular;
   let ringDistance = abs(length(position - view.pointer.xy) - view.pointer.z);
   let ring = (1.0 - smoothstep(0.0003, 0.0008, ringDistance)) * view.pointer.w;
   radiance *= 1.0 - 0.2 * ring;
-  return vec4f(toSrgb(toneMap(radiance)), 1.0);
+  let projected = project(displacedWorld);
+  var output: FragmentOutput;
+  output.color = vec4f(toSrgb(toneMap(radiance)), 1.0);
+  output.depth = projected.z / projected.w;
+  return output;
 }
 struct GrainOutput {
   @builtin(position) clip: vec4f,
   @location(0) local: vec2f,
   @location(1) tint: f32,
+  @location(2) center: vec3f,
+  @location(3) radius: f32,
 }
 @vertex fn grainVertex(@builtin(vertex_index) vertex: u32, @builtin(instance_index) instance: u32) -> GrainOutput {
   let corners = array<vec2f, 6>(vec2f(-1.0, -1.0), vec2f(1.0, -1.0), vec2f(-1.0, 1.0), vec2f(-1.0, 1.0), vec2f(1.0, -1.0), vec2f(1.0, 1.0));
   let grain = grains[instance];
   let corner = corners[vertex];
-  let radius = select(0.0, 0.00016, grain.position.w > 0.0);
+  let radius = select(0.0, 0.00016 * pow(grain.position.w / 0.000004, 1.0 / 3.0), grain.position.w > 0.0);
   let position = grain.position.xyz + (view.right.xyz * corner.x + view.up.xyz * corner.y) * radius;
   var output: GrainOutput;
   output.clip = select(vec4f(2.0, 2.0, 2.0, 1.0), project(position), grain.position.w > 0.0);
   output.local = corner;
   output.tint = hash2(vec2f(f32(instance), 17.0)).x;
+  output.center = grain.position.xyz;
+  output.radius = radius;
   return output;
 }
-@fragment fn grainFragment(input: GrainOutput) -> @location(0) vec4f {
+struct GrainFragmentOutput { @location(0) color: vec4f, @builtin(frag_depth) depth: f32 }
+@fragment fn grainFragment(input: GrainOutput) -> GrainFragmentOutput {
   let squared = dot(input.local, input.local);
   if (squared > 1.0) { discard; }
-  let normal = normalize(view.right.xyz * input.local.x + view.up.xyz * input.local.y - view.forward.xyz * sqrt(1.0 - squared));
-  let diffuse = max(0.0, dot(normal, normalize(view.light.xyz)));
+  let sphereDepth = sqrt(1.0 - squared);
+  let normal = normalize(view.right.xyz * input.local.x + view.up.xyz * input.local.y - view.forward.xyz * sphereDepth);
+  let surface = input.center + (view.right.xyz * input.local.x + view.up.xyz * input.local.y - view.forward.xyz * sphereDepth) * input.radius;
+  let light = normalize(view.light.xyz);
+  let towardEye = normalize(view.eye.xyz - surface);
+  let halfway = normalize(light + towardEye);
+  let diffuse = max(0.0, dot(normal, light));
+  let fresnel = 0.04 + 0.96 * pow(1.0 - max(0.0, dot(halfway, towardEye)), 5.0);
+  let sparkle = pow(max(0.0, dot(normal, halfway)), 36.0) * fresnel;
   let albedo = mix(vec3f(0.46, 0.315, 0.17), vec3f(0.72, 0.56, 0.33), input.tint);
-  return vec4f(toSrgb(toneMap(albedo * (vec3f(0.24, 0.28, 0.34) + vec3f(1.0, 0.89, 0.69) * 2.55 * diffuse))), 1.0);
+  let ambient = environment(normal) * 0.34;
+  let direct = vec3f(1.0, 0.89, 0.69) * 2.55 * diffuse;
+  let radiance = albedo * (ambient + direct) + environment(reflect(-towardEye, normal)) * sparkle * 0.55;
+  let projected = project(surface);
+  var output: GrainFragmentOutput;
+  output.color = vec4f(toSrgb(toneMap(radiance)), 1.0);
+  output.depth = projected.z / projected.w;
+  return output;
 }
 `;
