@@ -107,22 +107,43 @@ fn treeShadow(position: vec2f) -> f32 {
   let mask = textureSampleLevel(shadowTexture, shadowSampler, uv, 0.0).x;
   return 1.0 - mask * shadowOpacity;
 }
-fn sparkleAt(position: vec2f, normal: vec3f, halfway: vec3f, light: vec3f, shade: f32) -> f32 {
-  let cellSize = 0.0044;
+fn fresnelSchlickColor(f0: vec3f, cosine: f32) -> vec3f {
+  return f0 + (vec3f(1.0) - f0) * pow(1.0 - cosine, 5.0);
+}
+fn microfacetDistribution(alphaSquared: f32, normalHalf: f32) -> f32 {
+  let denominator = normalHalf * normalHalf * (alphaSquared - 1.0) + 1.0;
+  return alphaSquared / max(3.141593 * denominator * denominator, 0.0001);
+}
+fn geometryAttenuation(cosine: f32, viewCosine: f32) -> f32 {
+  return cosine * viewCosine / max((cosine * 0.7 + 0.3) * (viewCosine * 0.7 + 0.3), 0.001);
+}
+fn reflectiveSpeckAt(position: vec2f, normal: vec3f, towardEye: vec3f, light: vec3f, shade: f32, detail: f32) -> vec3f {
+  let cellSize = 0.0048;
   let cell = floor(position / cellSize);
-  let seed = hash2(cell + vec2f(13.7, 41.3));
-  let selected = smoothstep(0.958, 0.982, seed.x);
+  let selector = hash2(cell + vec2f(13.7, 41.3));
+  let selected = smoothstep(0.992, 0.9985, selector.x);
   let centerSeed = hash2(cell + vec2f(73.1, 19.6));
-  let center = (cell + 0.18 + centerSeed * 0.64) * cellSize;
+  let center = (cell + 0.12 + centerSeed * 0.76) * cellSize;
   let pixelWidth = max(length(dpdx(position)), length(dpdy(position)));
-  let radius = mix(0.00016, 0.00030, seed.y);
-  let speck = 1.0 - smoothstep(radius, radius + max(pixelWidth * 1.35, 0.000035), length(position - center));
+  let radius = mix(0.00013, 0.00024, centerSeed.y);
+  let coverage = selected * (1.0 - smoothstep(radius, radius + max(pixelWidth * 1.15, 0.00003), length(position - center)));
   let orientation = hash2(cell + vec2f(101.9, 7.4)) - 0.5;
-  let microNormal = normalize(normal + vec3f(orientation.x, 0.0, orientation.y) * 0.92);
-  let alignment = pow(max(0.0, dot(microNormal, halfway)), 28.0);
-  let sunlight = max(0.0, dot(normal, light));
+  let microNormal = normalize(normal + vec3f(orientation.x, 0.0, orientation.y) * 0.58);
+  let halfway = normalize(light + towardEye);
+  let cosine = max(0.0, dot(microNormal, light));
+  let viewCosine = max(0.02, dot(microNormal, towardEye));
+  let normalHalf = max(0.0, dot(microNormal, halfway));
+  let roughness = mix(0.024, 0.06, selector.y);
+  let alphaSquared = pow(roughness, 4.0);
+  let distribution = microfacetDistribution(alphaSquared, normalHalf);
+  let geometry = geometryAttenuation(cosine, viewCosine);
+  let fresnel = fresnelSchlickColor(mix(vec3f(0.055, 0.054, 0.050), vec3f(0.095, 0.090, 0.082), centerSeed.x), max(0.0, dot(halfway, towardEye)));
+  let directSpecular = distribution * geometry / max(4.0 * cosine * viewCosine, 0.001);
+  let reflected = reflect(-towardEye, microNormal);
   let sunlit = smoothstep(0.72, 0.94, shade);
-  return selected * speck * sunlit * sunlight * (0.65 + 5.5 * alignment);
+  let environmentSpecular = environment(reflected) * fresnel * pow(1.0 - roughness, 2.0) * 1.12 * mix(0.30, 1.0, sunlit);
+  let directColor = vec3f(1.0, 0.89, 0.69) * 3.2 * cosine * directSpecular * fresnel;
+  return coverage * mix(0.68, 1.0, detail) * sunlit * (directColor + environmentSpecular);
 }
 struct FragmentOutput { @location(0) color: vec4f, @builtin(frag_depth) depth: f32 }
 @fragment fn fragment(input: VertexOutput) -> FragmentOutput {
@@ -175,18 +196,17 @@ struct FragmentOutput { @location(0) color: vec4f, @builtin(frag_depth) depth: f
   let roughness = mix(0.80, 0.42, grainColor.y * detail);
   let alphaSquared = pow(roughness, 4.0);
   let normalHalf = max(0.0, dot(normal, halfway));
-  let denominator = normalHalf * normalHalf * (alphaSquared - 1.0) + 1.0;
-  let distribution = alphaSquared / max(3.141593 * denominator * denominator, 0.0001);
+  let distribution = microfacetDistribution(alphaSquared, normalHalf);
   let fresnel = 0.04 + 0.96 * pow(1.0 - max(0.0, dot(halfway, towardEye)), 5.0);
-  let geometry = cosine * viewCosine / max((cosine * 0.7 + 0.3) * (viewCosine * 0.7 + 0.3), 0.001);
+  let geometry = geometryAttenuation(cosine, viewCosine);
   let specular = distribution * fresnel * geometry / max(4.0 * cosine * viewCosine, 0.001);
   let diffuse = cosine * (0.84 + 0.16 * (1.0 - viewCosine));
   let ambient = environment(normal) * (0.24 + 0.16 * macroNormal.y) * occlusion * microOcclusion * mix(0.70, 1.0, shade);
   let direct = vec3f(1.0, 0.89, 0.69) * 2.55 * visibility * microOcclusion;
   let reflected = reflect(-towardEye, normal);
   let environmentSpecular = environment(reflected) * fresnel * pow(1.0 - roughness, 2.0) * 0.32 * occlusion * mix(0.42, 1.0, shade);
-  let sparkle = sparkleAt(position, normal, halfway, light, shade) * mix(0.62, 1.0, detail);
-  var radiance = albedo * (ambient + direct * diffuse) + direct * specular * cosine + environmentSpecular + vec3f(1.0, 0.965, 0.86) * sparkle * 20.0;
+  let reflectiveSpeck = reflectiveSpeckAt(position, normal, towardEye, light, shade, detail);
+  var radiance = albedo * (ambient + direct * diffuse) + direct * specular * cosine + environmentSpecular + reflectiveSpeck;
   let ringDistance = abs(length(position - view.pointer.xy) - view.pointer.z);
   let ring = (1.0 - smoothstep(0.0003, 0.0008, ringDistance)) * view.pointer.w;
   radiance *= 1.0 - 0.2 * ring;
@@ -246,18 +266,17 @@ struct FragmentOutput { @location(0) color: vec4f, @builtin(frag_depth) depth: f
   let roughness = mix(0.80, 0.42, grainColor.y * detail);
   let alphaSquared = pow(roughness, 4.0);
   let normalHalf = max(0.0, dot(normal, halfway));
-  let denominator = normalHalf * normalHalf * (alphaSquared - 1.0) + 1.0;
-  let distribution = alphaSquared / max(3.141593 * denominator * denominator, 0.0001);
+  let distribution = microfacetDistribution(alphaSquared, normalHalf);
   let fresnel = 0.04 + 0.96 * pow(1.0 - max(0.0, dot(halfway, towardEye)), 5.0);
-  let geometry = cosine * viewCosine / max((cosine * 0.7 + 0.3) * (viewCosine * 0.7 + 0.3), 0.001);
+  let geometry = geometryAttenuation(cosine, viewCosine);
   let specular = distribution * fresnel * geometry / max(4.0 * cosine * viewCosine, 0.001);
   let diffuse = cosine * (0.84 + 0.16 * (1.0 - viewCosine));
   let ambient = environment(normal) * (0.24 + 0.16 * macroNormal.y) * occlusion * microOcclusion * mix(0.70, 1.0, shade);
   let direct = vec3f(1.0, 0.89, 0.69) * 2.55 * visibility * microOcclusion;
   let reflected = reflect(-towardEye, normal);
   let environmentSpecular = environment(reflected) * fresnel * pow(1.0 - roughness, 2.0) * 0.32 * occlusion * mix(0.42, 1.0, shade);
-  let sparkle = sparkleAt(position, normal, halfway, light, shade) * mix(0.62, 1.0, detail);
-  var radiance = albedo * (ambient + direct * diffuse) + direct * specular * cosine + environmentSpecular + vec3f(1.0, 0.965, 0.86) * sparkle * 20.0;
+  let reflectiveSpeck = reflectiveSpeckAt(position, normal, towardEye, light, shade, detail);
+  var radiance = albedo * (ambient + direct * diffuse) + direct * specular * cosine + environmentSpecular + reflectiveSpeck;
   let ringDistance = abs(length(position - view.pointer.xy) - view.pointer.z);
   let ring = (1.0 - smoothstep(0.0003, 0.0008, ringDistance)) * view.pointer.w;
   radiance *= 1.0 - 0.2 * ring;

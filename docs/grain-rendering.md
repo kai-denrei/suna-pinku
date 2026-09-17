@@ -14,7 +14,7 @@ Desktop keeps the original shader unchanged. Mobile keeps the same world-space g
 
 ## Sun glints and bloom
 
-A second, much sparser world-space grain population represents the few highly reflective mineral grains that catch direct sun in real beach sand. The selection is deterministic in bed space rather than screen space, so the points remain attached to the sand while the camera or drawing surface changes. Each selected speck is submillimeter-sized, derivative-filtered to a stable one-to-few-pixel footprint, and gets a narrow microfacet-oriented sun reflection on top of the ordinary granular BRDF.
+A second, much sparser world-space grain population represents the few highly reflective mineral grains that catch direct sun in real beach sand. The selection is deterministic in bed space rather than screen space, so the points remain attached to the sand while the camera or drawing surface changes. Each selected speck is still treated as a grain, not a painted white dot: it gets its own tiny footprint, a perturbed micro-normal, a very low roughness, and a dielectric Fresnel/specular response. The visible highlight therefore comes from the same direct-sun and environment reflection logic as the rest of the material, just concentrated into a much narrower lobe.
 
 The sparkle term is explicitly gated by direct tree-shadow visibility. A grain inside the coconut shadow cannot retain the bright sun glint, and its broader environment response is also reduced rather than leaving a white highlight in shade.
 

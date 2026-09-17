@@ -30,8 +30,7 @@ type ShadowPlacement = {
 const LIGHT_X = Math.cos(-0.8)
 const LIGHT_Y = 0.65
 const LIGHT_Z = Math.sin(-0.8)
-const SHADOW_RESOLUTION = 384
-const SHADOW_FPS = 30
+const SHADOW_RESOLUTION = 512
 const SHADOW_OPACITY = 0.82
 
 type Gltf = {
@@ -84,6 +83,49 @@ struct VertexOutput {
   let alpha = smoothstep(0.10, 0.55, texel.a);
   if (alpha <= 0.002) { discard; }
   return vec4f(alpha, alpha, alpha, alpha);
+}
+`
+
+const stabilizeShader = `
+struct StabilizeView { settings: vec4f }
+@group(0) @binding(0) var maskSampler: sampler;
+@group(0) @binding(1) var rawMask: texture_2d<f32>;
+@group(0) @binding(2) var historyMask: texture_2d<f32>;
+@group(0) @binding(3) var<uniform> stabilize: StabilizeView;
+struct VertexOutput { @builtin(position) clip: vec4f, @location(0) uv: vec2f }
+@vertex fn vertex(@builtin(vertex_index) index: u32) -> VertexOutput {
+  let positions = array<vec2f, 3>(vec2f(-1.0, -1.0), vec2f(3.0, -1.0), vec2f(-1.0, 3.0));
+  let clip = positions[index];
+  var output: VertexOutput;
+  output.clip = vec4f(clip, 0.0, 1.0);
+  output.uv = clip * vec2f(0.5, -0.5) + vec2f(0.5);
+  return output;
+}
+fn filteredRaw(uv: vec2f) -> f32 {
+  let texel = stabilize.settings.xy;
+  let center = textureSampleLevel(rawMask, maskSampler, uv, 0.0).x * 0.36;
+  let cardinals = (
+    textureSampleLevel(rawMask, maskSampler, uv + vec2f(texel.x, 0.0), 0.0).x +
+    textureSampleLevel(rawMask, maskSampler, uv - vec2f(texel.x, 0.0), 0.0).x +
+    textureSampleLevel(rawMask, maskSampler, uv + vec2f(0.0, texel.y), 0.0).x +
+    textureSampleLevel(rawMask, maskSampler, uv - vec2f(0.0, texel.y), 0.0).x
+  ) * 0.12;
+  let diagonals = (
+    textureSampleLevel(rawMask, maskSampler, uv + texel, 0.0).x +
+    textureSampleLevel(rawMask, maskSampler, uv + vec2f(texel.x, -texel.y), 0.0).x +
+    textureSampleLevel(rawMask, maskSampler, uv - vec2f(texel.x, -texel.y), 0.0).x +
+    textureSampleLevel(rawMask, maskSampler, uv - texel, 0.0).x
+  ) * 0.04;
+  return center + cardinals + diagonals;
+}
+@fragment fn fragment(input: VertexOutput) -> @location(0) vec4f {
+  let raw = filteredRaw(input.uv);
+  let history = textureSampleLevel(historyMask, maskSampler, input.uv, 0.0).x;
+  let historyEnabled = stabilize.settings.z;
+  let difference = abs(raw - history);
+  let alpha = mix(1.0, mix(0.16, 0.46, smoothstep(0.025, 0.22, difference)), historyEnabled);
+  let stable = mix(history, raw, alpha);
+  return vec4f(stable, stable, stable, stable);
 }
 `
 
@@ -204,7 +246,7 @@ async function loadTree(): Promise<ParsedTree> {
   }
   for (const root of gltf.scenes[gltf.scene]!.nodes) visit(root, identity4())
 
-  const rawMeshes: Array<{ positions: Float32Array; texcoords: Float32Array; indices: Uint32Array }> = []
+  const rawMeshes: ParsedMesh[] = []
   let minX = Infinity; let minY = Infinity; let minZ = Infinity
   let maxX = -Infinity; let maxY = -Infinity; let maxZ = -Infinity
   for (const [nodeIndex, node] of gltf.nodes.entries()) {
@@ -215,7 +257,9 @@ async function loadTree(): Promise<ParsedTree> {
     const positions = new Float32Array(sourcePositions.length)
     for (let index = 0; index < sourcePositions.length; index += 3) {
       const point = transformPoint(worldMatrices[nodeIndex]!, sourcePositions[index]!, sourcePositions[index + 1]!, sourcePositions[index + 2]!)
-      positions[index] = point[0]; positions[index + 1] = point[1]; positions[index + 2] = point[2]
+      positions[index] = point[0]
+      positions[index + 1] = point[1]
+      positions[index + 2] = point[2]
       minX = Math.min(minX, point[0]); minY = Math.min(minY, point[1]); minZ = Math.min(minZ, point[2])
       maxX = Math.max(maxX, point[0]); maxY = Math.max(maxY, point[1]); maxZ = Math.max(maxZ, point[2])
     }
@@ -244,8 +288,10 @@ async function loadTree(): Promise<ParsedTree> {
       const z = mesh.positions[index + 2]!
       const projectedX = x - LIGHT_X * y / LIGHT_Y
       const projectedZ = z - LIGHT_Z * y / LIGHT_Y
-      minProjectedX = Math.min(minProjectedX, projectedX); maxProjectedX = Math.max(maxProjectedX, projectedX)
-      minProjectedZ = Math.min(minProjectedZ, projectedZ); maxProjectedZ = Math.max(maxProjectedZ, projectedZ)
+      minProjectedX = Math.min(minProjectedX, projectedX)
+      maxProjectedX = Math.max(maxProjectedX, projectedX)
+      minProjectedZ = Math.min(minProjectedZ, projectedZ)
+      maxProjectedZ = Math.max(maxProjectedZ, projectedZ)
     }
   }
   const projectedCenter = { x: (minProjectedX + maxProjectedX) * 0.5, y: (minProjectedZ + maxProjectedZ) * 0.5 }
@@ -285,23 +331,32 @@ export class CoconutShadow {
   readonly sampler: GPUSampler
   readonly texture: GPUTexture
   private readonly device: GPUDevice
-  private readonly uniform: GPUBuffer
-  private readonly data = new Float32Array(8)
-  private pipeline!: GPURenderPipeline
-  private group!: GPUBindGroup
+  private readonly shadowUniform: GPUBuffer
+  private readonly stabilizeUniform: GPUBuffer
+  private readonly shadowData = new Float32Array(8)
+  private readonly stabilizeData = new Float32Array(4)
+  private shadowPipeline!: GPURenderPipeline
+  private stabilizePipeline!: GPURenderPipeline
+  private shadowGroup!: GPUBindGroup
+  private stabilizeGroup!: GPUBindGroup
   private geometries: MeshGeometry[] = []
   private colorTexture?: GPUTexture
+  private rawTexture: GPUTexture
+  private historyTexture: GPUTexture
   private projectedCenter: Point2 = { x: 0, y: 0 }
   private projectedHalfSize: Point2 = { x: 1, y: 1 }
   private placement: ShadowPlacement = { centerX: 0.18, centerZ: -0.10, halfWidth: 0.11, halfHeight: 0.11 }
-  private lastRender = -Infinity
+  private hasHistory = false
   private mobile = false
 
   constructor(device: GPUDevice, mobile = false) {
     this.device = device
     this.mobile = mobile
-    this.uniform = device.createBuffer({ label: 'Coconut shadow view', size: this.data.byteLength, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST })
-    this.texture = device.createTexture({ label: 'Coconut tree shadow', size: [SHADOW_RESOLUTION, SHADOW_RESOLUTION], format: 'rgba8unorm', usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING })
+    this.shadowUniform = device.createBuffer({ label: 'Coconut shadow view', size: this.shadowData.byteLength, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST })
+    this.stabilizeUniform = device.createBuffer({ label: 'Coconut shadow stabilization', size: this.stabilizeData.byteLength, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST })
+    this.texture = device.createTexture({ label: 'Coconut tree shadow', size: [SHADOW_RESOLUTION, SHADOW_RESOLUTION], format: 'rgba8unorm', usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_SRC })
+    this.rawTexture = device.createTexture({ label: 'Coconut tree shadow raw', size: [SHADOW_RESOLUTION, SHADOW_RESOLUTION], format: 'rgba8unorm', usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING })
+    this.historyTexture = device.createTexture({ label: 'Coconut tree shadow history', size: [SHADOW_RESOLUTION, SHADOW_RESOLUTION], format: 'rgba8unorm', usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST })
     this.sampler = device.createSampler({ label: 'Coconut tree shadow sampler', magFilter: 'linear', minFilter: 'linear', addressModeU: 'clamp-to-edge', addressModeV: 'clamp-to-edge' })
   }
 
@@ -324,20 +379,33 @@ export class CoconutShadow {
     this.device.queue.copyExternalImageToTexture({ source: bitmap }, { texture: this.colorTexture }, [bitmap.width, bitmap.height])
     bitmap.close()
     const colorSampler = this.device.createSampler({ label: 'Coconut alpha sampler', magFilter: 'linear', minFilter: 'linear', addressModeU: 'repeat', addressModeV: 'repeat' })
-    const module = this.device.createShaderModule({ label: 'Coconut shadow WGSL', code: shadowShader })
-    this.pipeline = await this.device.createRenderPipelineAsync({ label: 'Coconut shadow mask', layout: 'auto',
-      vertex: { module, entryPoint: 'vertex', buffers: [{ arrayStride: 20, attributes: [
+    const shadowModule = this.device.createShaderModule({ label: 'Coconut shadow WGSL', code: shadowShader })
+    this.shadowPipeline = await this.device.createRenderPipelineAsync({ label: 'Coconut shadow mask', layout: 'auto',
+      vertex: { module: shadowModule, entryPoint: 'vertex', buffers: [{ arrayStride: 20, attributes: [
         { shaderLocation: 0, offset: 0, format: 'float32x3' }, { shaderLocation: 1, offset: 12, format: 'float32x2' },
       ] }] },
-      fragment: { module, entryPoint: 'fragment', targets: [{ format: 'rgba8unorm', blend: {
+      fragment: { module: shadowModule, entryPoint: 'fragment', targets: [{ format: 'rgba8unorm', blend: {
         color: { operation: 'max', srcFactor: 'one', dstFactor: 'one' }, alpha: { operation: 'max', srcFactor: 'one', dstFactor: 'one' },
       } }] },
       primitive: { topology: 'triangle-list', cullMode: 'none' },
     })
-    this.group = this.device.createBindGroup({ layout: this.pipeline.getBindGroupLayout(0), entries: [
-      { binding: 0, resource: { buffer: this.uniform } },
+    this.shadowGroup = this.device.createBindGroup({ layout: this.shadowPipeline.getBindGroupLayout(0), entries: [
+      { binding: 0, resource: { buffer: this.shadowUniform } },
       { binding: 1, resource: colorSampler },
       { binding: 2, resource: this.colorTexture.createView() },
+    ] })
+
+    const stabilizeModule = this.device.createShaderModule({ label: 'Coconut shadow stabilize WGSL', code: stabilizeShader })
+    this.stabilizePipeline = await this.device.createRenderPipelineAsync({ label: 'Coconut shadow stabilize', layout: 'auto',
+      vertex: { module: stabilizeModule, entryPoint: 'vertex' },
+      fragment: { module: stabilizeModule, entryPoint: 'fragment', targets: [{ format: 'rgba8unorm' }] },
+      primitive: { topology: 'triangle-list' },
+    })
+    this.stabilizeGroup = this.device.createBindGroup({ layout: this.stabilizePipeline.getBindGroupLayout(0), entries: [
+      { binding: 0, resource: this.sampler },
+      { binding: 1, resource: this.rawTexture.createView() },
+      { binding: 2, resource: this.historyTexture.createView() },
+      { binding: 3, resource: { buffer: this.stabilizeUniform } },
     ] })
   }
 
@@ -347,19 +415,30 @@ export class CoconutShadow {
   }
 
   encode(encoder: GPUCommandEncoder, now: number) {
-    if (!this.pipeline || now - this.lastRender < 1000 / SHADOW_FPS) return
-    this.lastRender = now
-    this.data.set([this.projectedCenter.x, this.projectedCenter.y, this.projectedHalfSize.x, this.projectedHalfSize.y, now * 0.001, 0, 0, 0])
-    this.device.queue.writeBuffer(this.uniform, 0, this.data)
-    const pass = encoder.beginRenderPass({ label: 'Coconut tree shadow mask', colorAttachments: [{ view: this.texture.createView(), clearValue: { r: 0, g: 0, b: 0, a: 0 }, loadOp: 'clear', storeOp: 'store' }] })
-    pass.setPipeline(this.pipeline)
-    pass.setBindGroup(0, this.group)
+    if (!this.shadowPipeline || !this.stabilizePipeline) return
+    this.shadowData.set([this.projectedCenter.x, this.projectedCenter.y, this.projectedHalfSize.x, this.projectedHalfSize.y, now * 0.001, 0, 0, 0])
+    this.stabilizeData.set([1 / SHADOW_RESOLUTION, 1 / SHADOW_RESOLUTION, this.hasHistory ? 1 : 0, 0])
+    this.device.queue.writeBuffer(this.shadowUniform, 0, this.shadowData)
+    this.device.queue.writeBuffer(this.stabilizeUniform, 0, this.stabilizeData)
+
+    const shadowPass = encoder.beginRenderPass({ label: 'Coconut tree shadow raw', colorAttachments: [{ view: this.rawTexture.createView(), clearValue: { r: 0, g: 0, b: 0, a: 0 }, loadOp: 'clear', storeOp: 'store' }] })
+    shadowPass.setPipeline(this.shadowPipeline)
+    shadowPass.setBindGroup(0, this.shadowGroup)
     for (const geometry of this.geometries) {
-      pass.setVertexBuffer(0, geometry.vertex)
-      pass.setIndexBuffer(geometry.index, 'uint32')
-      pass.drawIndexed(geometry.indexCount)
+      shadowPass.setVertexBuffer(0, geometry.vertex)
+      shadowPass.setIndexBuffer(geometry.index, 'uint32')
+      shadowPass.drawIndexed(geometry.indexCount)
     }
-    pass.end()
+    shadowPass.end()
+
+    const stabilizePass = encoder.beginRenderPass({ label: 'Coconut tree shadow stabilize', colorAttachments: [{ view: this.texture.createView(), clearValue: { r: 0, g: 0, b: 0, a: 0 }, loadOp: 'clear', storeOp: 'store' }] })
+    stabilizePass.setPipeline(this.stabilizePipeline)
+    stabilizePass.setBindGroup(0, this.stabilizeGroup)
+    stabilizePass.draw(3)
+    stabilizePass.end()
+
+    encoder.copyTextureToTexture({ texture: this.texture }, { texture: this.historyTexture }, { width: SHADOW_RESOLUTION, height: SHADOW_RESOLUTION })
+    this.hasHistory = true
   }
 
   get centerX() { return this.placement.centerX }
@@ -371,7 +450,10 @@ export class CoconutShadow {
   dispose() {
     for (const geometry of this.geometries) { geometry.vertex.destroy(); geometry.index.destroy() }
     this.colorTexture?.destroy()
+    this.rawTexture.destroy()
+    this.historyTexture.destroy()
     this.texture.destroy()
-    this.uniform.destroy()
+    this.shadowUniform.destroy()
+    this.stabilizeUniform.destroy()
   }
 }
