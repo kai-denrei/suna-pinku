@@ -2,11 +2,13 @@ import { SAND, type Stroke } from '../config'
 import { checkedShader } from '../platform/shader'
 import type { SandSolver } from '../simulation/solver'
 import { SandCamera } from './camera'
+import { BedLighting } from './lighting'
 import { surfaceShader } from './shaders'
 
 export class SandRenderer {
   readonly camera = new SandCamera()
   private readonly uniform: GPUBuffer
+  private readonly lighting: BedLighting
   private readonly indices: GPUBuffer
   private readonly indexCount: number
   private pipeline!: GPURenderPipeline
@@ -25,6 +27,7 @@ export class SandRenderer {
   constructor(device: GPUDevice, solver: SandSolver, format: GPUTextureFormat) {
     this.device = device; this.solver = solver; this.format = format
     this.uniform = device.createBuffer({ label: 'Surface view', size: 112, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST })
+    this.lighting = new BedLighting(device, solver, this.uniform)
     const resolution = solver.resolution
     this.indexCount = (resolution - 1) ** 2 * 6
     const indices = new Uint32Array(this.indexCount)
@@ -41,6 +44,7 @@ export class SandRenderer {
   }
 
   async initialize() {
+    await this.lighting.initialize()
     const module = await checkedShader(this.device, 'Granular surface WGSL', surfaceShader)
     this.pipeline = await this.device.createRenderPipelineAsync({ label: 'Granular sand surface', layout: 'auto',
       vertex: { module, entryPoint: 'vertex' }, fragment: { module, entryPoint: 'fragment', targets: [{ format: this.format }] },
@@ -49,6 +53,7 @@ export class SandRenderer {
     })
     this.groups = this.solver.buffers.map((buffer) => this.device.createBindGroup({ layout: this.pipeline.getBindGroupLayout(0), entries: [
       { binding: 0, resource: { buffer: this.uniform } }, { binding: 1, resource: { buffer } },
+      { binding: 3, resource: { buffer: this.lighting.buffer } },
     ] }))
     this.grainPipeline = await this.device.createRenderPipelineAsync({ label: 'Loose sand grains', layout: 'auto',
       vertex: { module, entryPoint: 'grainVertex' }, fragment: { module, entryPoint: 'grainFragment', targets: [{ format: this.format }] },
@@ -75,6 +80,7 @@ export class SandRenderer {
       this.solver.resolution, SAND.extent, this.width, this.height,
       pointer.to.x, pointer.to.y, pointer.radius, showPointer ? 1 : 0])
     this.device.queue.writeBuffer(this.uniform, 0, this.data)
+    this.lighting.encode(encoder, this.lightAngle)
     const pass = encoder.beginRenderPass({ label: 'Sand image', colorAttachments: [{ view: target, clearValue: { r: 0.55, g: 0.44, b: 0.29, a: 1 }, loadOp: 'clear', storeOp: 'store' }],
       depthStencilAttachment: { view: this.depth.createView(), depthClearValue: 1, depthLoadOp: 'clear', depthStoreOp: 'discard' },
     })
@@ -88,5 +94,5 @@ export class SandRenderer {
     pass.end()
   }
 
-  dispose() { this.uniform.destroy(); this.indices.destroy(); this.depth?.destroy() }
+  dispose() { this.lighting.dispose(); this.uniform.destroy(); this.indices.destroy(); this.depth?.destroy() }
 }

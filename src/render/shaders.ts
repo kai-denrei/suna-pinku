@@ -12,6 +12,18 @@ struct View {
 @group(0) @binding(1) var<storage, read> bed: array<vec4f>;
 struct Grain { position: vec4f, velocity: vec4f }
 @group(0) @binding(2) var<storage, read> grains: array<Grain>;
+@group(0) @binding(3) var<storage, read> lighting: array<vec4f>;
+fn lightAt(cell: vec2i) -> vec2f {
+  let bounded = vec2u(clamp(cell, vec2i(0), vec2i(i32(view.grid.x) - 1)));
+  return lighting[bounded.y * u32(view.grid.x) + bounded.x].xy;
+}
+fn illuminationAt(position: vec2f) -> vec2f {
+  let coordinate = (position / view.grid.y + 0.5) * view.grid.x - 0.5;
+  let cell = vec2i(floor(coordinate));
+  let blend = fract(coordinate);
+  return mix(mix(lightAt(cell), lightAt(cell + vec2i(1, 0)), blend.x),
+    mix(lightAt(cell + vec2i(0, 1)), lightAt(cell + vec2i(1, 1)), blend.x), blend.y);
+}
 fn cellAt(cell: vec2i) -> vec4f {
   let bounded = clamp(cell, vec2i(0), vec2i(i32(view.grid.x) - 1));
   return bed[u32(bounded.y) * u32(view.grid.x) + u32(bounded.x)];
@@ -52,7 +64,6 @@ fn toSrgb(color: vec3f) -> vec3f {
 @fragment fn fragment(input: VertexOutput) -> @location(0) vec4f {
   let position = input.world.xz;
   let spacing = view.grid.y / view.grid.x;
-  let material = stateAt(position);
   let heightLeft = stateAt(position - vec2f(spacing, 0.0)).x;
   let heightRight = stateAt(position + vec2f(spacing, 0.0)).x;
   let heightBack = stateAt(position - vec2f(0.0, spacing)).x;
@@ -86,20 +97,9 @@ fn toSrgb(color: vec3f) -> vec3f {
   let halfway = normalize(light + towardEye);
   let cosine = max(0.0, dot(normal, light));
   let viewCosine = max(0.02, dot(normal, towardEye));
-  var visibility = 1.0;
-  var ambientOcclusion = 0.0;
-  for (var sampleIndex = 1; sampleIndex <= 14; sampleIndex++) {
-    let distance = spacing * (0.8 * f32(sampleIndex) + 0.38 * f32(sampleIndex * sampleIndex));
-    let samplePosition = position + light.xz * distance;
-    let blocker = stateAt(samplePosition).x - material.x - light.y * distance;
-    visibility = min(visibility, 1.0 - smoothstep(-0.0002 - distance * 0.035, 0.0004 + distance * 0.045, blocker));
-  }
-  let directions = array<vec2f, 4>(vec2f(1.0, 0.0), vec2f(-1.0, 0.0), vec2f(0.0, 1.0), vec2f(0.0, -1.0));
-  for (var axis = 0u; axis < 4u; axis++) {
-    let elevation = stateAt(position + directions[axis] * 0.009).x - material.x;
-    ambientOcclusion += max(0.0, elevation) / sqrt(elevation * elevation + 0.000081);
-  }
-  let occlusion = clamp(1.0 - ambientOcclusion * 0.24, 0.25, 1.0);
+  let illumination = illuminationAt(position);
+  let visibility = illumination.x;
+  let occlusion = illumination.y;
   let mineral = mix(vec3f(0.46, 0.315, 0.17), vec3f(0.72, 0.56, 0.33), grainColor.x);
   let darkGrain = mix(1.0, 0.3, smoothstep(0.94, 0.985, grainColor.y));
   let albedo = mix(vec3f(0.59, 0.435, 0.25), mineral * darkGrain * mix(0.56, 1.0, grainEdge), detail);

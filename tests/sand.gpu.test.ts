@@ -3,6 +3,7 @@ import { create, globals } from 'webgpu'
 import { SAND, idleStroke, type Stroke } from '../src/config'
 import { SandSolver } from '../src/simulation/solver'
 import { SandRenderer } from '../src/render/renderer'
+import { BedLighting } from '../src/render/lighting'
 
 let device: GPUDevice
 let gpu: GPU
@@ -33,17 +34,21 @@ function volume(state: Float32Array) {
   for (let index = 0; index < state.length; index += 4) sum += state[index]
   return sum
 }
-async function particleMass(solver: SandSolver) {
+async function readParticles(solver: SandSolver) {
   const size = solver.particleCount * 32
   const staging = device.createBuffer({ size, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST })
   const encoder = device.createCommandEncoder()
   encoder.copyBufferToBuffer(solver.particles, 0, staging, 0, size)
   device.queue.submit([encoder.finish()])
   await staging.mapAsync(GPUMapMode.READ)
-  const values = new Float32Array(staging.getMappedRange())
+  const values = new Float32Array(staging.getMappedRange()).slice()
+  staging.unmap(); staging.destroy()
+  return values
+}
+async function particleMass(solver: SandSolver) {
+  const values = await readParticles(solver)
   let total = 0
   for (let index = 3; index < values.length; index += 8) total += values[index]
-  staging.unmap(); staging.destroy()
   return total
 }
 function step(solver: SandSolver, stroke: Stroke, count: number) {
@@ -87,6 +92,114 @@ test('actual WGSL preserves mass, excavates a groove, deposits banks, and settle
     expect(drift).toBeLessThan(0.00015)
     expect(errors).toEqual([])
   } finally { solver.dispose() }
+})
+
+test.each([0, 16, 31])('eight-neighbor transport conserves a pile at grid coordinate %s', async (coordinate) => {
+  const solver = new SandSolver(device, 32)
+  await solver.initialize()
+  try {
+    const initial = new Float32Array(32 * 32 * 4)
+    for (let index = 0; index < initial.length; index += 4) initial[index] = SAND.floor
+    initial[(coordinate * 32 + coordinate) * 4] = 0.08
+    device.queue.writeBuffer(solver.state, 0, initial)
+    step(solver, idleStroke(), 1)
+    const transported = await readState(solver)
+    const direction = coordinate === 31 ? -1 : 1
+    const diagonal = ((coordinate + direction) * 32 + coordinate + direction) * 4
+    expect(transported[diagonal]).toBeGreaterThan(SAND.floor + 0.001)
+    if (coordinate === 16) {
+      for (const [horizontal, vertical] of [[-1, -1], [-1, 1], [1, -1], [1, 1]]) {
+        expect(transported[((coordinate + vertical) * 32 + coordinate + horizontal) * 4]).toBeCloseTo(transported[diagonal], 7)
+      }
+    }
+    step(solver, idleStroke(), 120)
+    const settled = await readState(solver)
+    for (let index = 0; index < settled.length; index += 4) {
+      expect(Number.isFinite(settled[index])).toBe(true)
+      expect(settled[index]).toBeGreaterThanOrEqual(SAND.floor - 1e-7)
+    }
+    expect(Math.abs((volume(settled) + await particleMass(solver)) / volume(initial) - 1)).toBeLessThan(0.000002)
+    expect(errors).toEqual([])
+  } finally { solver.dispose() }
+})
+
+test.each([-0.1, 0, 0.1])('grain impacts respect slope %s and return their mass to the bed', async (slope) => {
+  const solver = new SandSolver(device, 32)
+  await solver.initialize()
+  try {
+    const initial = new Float32Array(32 * 32 * 4)
+    for (let row = 0; row < 32; row++) {
+      for (let column = 0; column < 32; column++) {
+        initial[(row * 32 + column) * 4] = 0.08 + slope * ((column + 0.5) * SAND.extent / 32 - SAND.extent / 2)
+      }
+    }
+    device.queue.writeBuffer(solver.state, 0, initial)
+    device.queue.writeBuffer(solver.particles, 0, new Float32Array([0, 0.0802, 0, 0.000004, 0, -0.2, 0, 0]))
+    step(solver, idleStroke(), 1)
+    const grains = await readParticles(solver)
+    expect(grains[3]).toBeCloseTo(0.000004, 9)
+    expect(grains[5]).toBeGreaterThan(0)
+    expect(grains[4]).toBeCloseTo(-slope * grains[5], 6)
+    expect(Math.hypot(grains[4], grains[5], grains[6])).toBeLessThan(0.2 + 9.81 * SAND.step)
+    expect(grains[1]).toBeCloseTo(0.08018, 6)
+    step(solver, idleStroke(), 120)
+    expect(await particleMass(solver)).toBe(0)
+    expect(Math.abs(volume(await readState(solver)) - volume(initial) - 0.000004)).toBeLessThan(1e-7)
+    expect(errors).toEqual([])
+  } finally { solver.dispose() }
+})
+
+test('horizon lighting leaves planes open, occludes trenches, and refreshes after reset and paired steps', async () => {
+  const solver = new SandSolver(device, 64)
+  await solver.initialize()
+  const uniform = device.createBuffer({ size: 112, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST })
+  const lighting = new BedLighting(device, solver, uniform)
+  const staging = device.createBuffer({ size: solver.byteLength, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST })
+  const view = new Float32Array(28)
+  view.set([1, 0.65, 0, 0, 64, SAND.extent, 256, 192], 16)
+  device.queue.writeBuffer(uniform, 0, view)
+  async function readLighting(angle: number) {
+    const encoder = device.createCommandEncoder()
+    lighting.encode(encoder, angle)
+    encoder.copyBufferToBuffer(lighting.buffer, 0, staging, 0, solver.byteLength)
+    device.queue.submit([encoder.finish()])
+    await staging.mapAsync(GPUMapMode.READ)
+    const result = new Float32Array(staging.getMappedRange()).slice()
+    staging.unmap()
+    for (const value of result) expect(Number.isFinite(value)).toBe(true)
+    return result
+  }
+  try {
+    await lighting.initialize()
+    const state = new Float32Array(64 * 64 * 4)
+    for (let row = 0; row < 64; row++) {
+      for (let column = 0; column < 64; column++) state[(row * 64 + column) * 4] = 0.08 + column * 0.001
+    }
+    device.queue.writeBuffer(solver.state, 0, state)
+    const center = (32 * 64 + 32) * 4
+    const plane = await readLighting(0)
+    expect(plane[center]).toBeCloseTo(1, 5)
+    expect(plane[center + 1]).toBeCloseTo(1, 5)
+    for (let row = 0; row < 64; row++) {
+      for (let column = 0; column < 64; column++) state[(row * 64 + column) * 4] = Math.abs(column - 32) <= 1 ? 0.03 : 0.08
+    }
+    device.queue.writeBuffer(solver.state, 0, state)
+    const trench = await readLighting(1)
+    expect(trench[center]).toBeLessThan(0.2)
+    expect(trench[center + 1]).toBeLessThan(0.8)
+    const revision = solver.revision
+    const stateIndex = solver.stateIndex
+    step(solver, idleStroke(), 2)
+    expect(solver.stateIndex).toBe(stateIndex)
+    expect(solver.revision).toBe(revision + 2)
+    const changed = await readLighting(1)
+    expect(changed[center + 1]).not.toBe(trench[center + 1])
+    solver.reset()
+    const reset = await readLighting(1)
+    expect(reset[center]).toBeGreaterThan(0.99)
+    expect(reset[center + 1]).toBeGreaterThan(0.99)
+    expect(errors).toEqual([])
+  } finally { lighting.dispose(); uniform.destroy(); staging.destroy(); solver.dispose() }
 })
 
 test('surface pipeline compiles and renders nonuniform opaque pixels offscreen', async () => {

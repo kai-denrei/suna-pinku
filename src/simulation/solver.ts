@@ -14,6 +14,7 @@ export class SandSolver {
   private pipelines!: Record<'initialize' | 'transport' | 'integrate', GPUComputePipeline>
   private groups: GPUBindGroup[][] = []
   private current = 0
+  private generation = 0
   private readonly data = new Float32Array(16)
   readonly byteLength: number
 
@@ -24,7 +25,7 @@ export class SandSolver {
     this.resolution = resolution
     this.byteLength = resolution * resolution * 16
     this.buffers = [0, 1].map((index) => device.createBuffer({ label: `Sand state ${index}`, size: this.byteLength, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST }))
-    this.flux = device.createBuffer({ label: 'Conservative face flux', size: this.byteLength, usage: GPUBufferUsage.STORAGE })
+    this.flux = device.createBuffer({ label: 'Eight-neighbor conservative flux', size: this.byteLength * 2, usage: GPUBufferUsage.STORAGE })
     this.particleCount = Math.min(SAND.particles, resolution * resolution)
     this.particles = device.createBuffer({ label: 'Mass carrying grains', size: this.particleCount * 32, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST })
     this.exchange = device.createBuffer({ label: 'Fixed-point grain exchange', size: resolution * resolution * 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST })
@@ -32,6 +33,7 @@ export class SandSolver {
   }
   get state() { return this.buffers[this.current] }
   get stateIndex() { return this.current }
+  get revision() { return this.generation }
 
   async initialize() {
     const module = await checkedShader(this.device, 'Sand transport WGSL', simulationShader)
@@ -70,6 +72,7 @@ export class SandSolver {
   }
 
   reset() {
+    this.generation++
     this.writeParams(0, idleStroke())
     const encoder = this.device.createCommandEncoder()
     encoder.clearBuffer(this.particles)
@@ -98,6 +101,7 @@ export class SandSolver {
       pass.dispatchWorkgroups(Math.ceil(this.resolution / 8), Math.ceil(this.resolution / 8))
       pass.end()
       this.current = 1 - this.current
+      this.generation++
     })
   }
 
