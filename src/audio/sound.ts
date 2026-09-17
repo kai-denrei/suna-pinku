@@ -13,6 +13,10 @@ type GestureTrack = {
   audibleUntil: number
 }
 
+type NavigatorWithAudioSession = Navigator & {
+  audioSession?: { type: string }
+}
+
 const ambientVolume = 0.08
 const proceduralVolume = 0.34
 const minimumSampleMilliseconds = 1
@@ -26,11 +30,29 @@ function penPressure(event: PointerEvent) {
   return event.pointerType === 'pen' ? event.pressure : 0
 }
 
+function isAppleMobile() {
+  return /iPhone|iPad|iPod/.test(navigator.userAgent)
+    || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1)
+}
+
+function requestPlaybackAudioSession() {
+  if (!isAppleMobile()) return
+  const session = (navigator as NavigatorWithAudioSession).audioSession
+  if (!session) return
+  try {
+    session.type = 'playback'
+  } catch {
+    return
+  }
+}
+
 export class SandSound {
   private readonly ambient = new Audio('/scene_assets/beach.mp3')
   private readonly gestures = new Map<number, GestureTrack>()
   private readonly unlockController = new AbortController()
   private context: AudioContext | undefined
+  private ambientSource: MediaElementAudioSourceNode | undefined
+  private ambientGain: GainNode | undefined
   private sandNode: AudioWorkletNode | undefined
   private proceduralReady: Promise<void> | undefined
   private disposed = false
@@ -38,9 +60,11 @@ export class SandSound {
   constructor() {
     this.ambient.loop = true
     this.ambient.preload = 'auto'
-    this.ambient.volume = ambientVolume
+    // Keep the media element itself at unity. iOS has historically ignored or
+    // inconsistently applied HTMLMediaElement.volume, so the audible level is
+    // controlled by the shared Web Audio gain stage instead.
+    this.ambient.volume = 1
     this.ambient.setAttribute('playsinline', '')
-    void this.playAmbient()
 
     const unlock = () => { void this.unlock() }
     const { signal } = this.unlockController
@@ -124,6 +148,10 @@ export class SandSound {
     this.cancelAll()
     this.sandNode?.disconnect()
     this.sandNode = undefined
+    this.ambientSource?.disconnect()
+    this.ambientSource = undefined
+    this.ambientGain?.disconnect()
+    this.ambientGain = undefined
     if (this.context) void this.context.close()
     this.context = undefined
     this.ambient.pause()
@@ -133,11 +161,31 @@ export class SandSound {
 
   private async unlock() {
     if (this.disposed) return
+    const context = this.ensureContext()
+    const resume = context.state === 'suspended' ? context.resume().catch(() => undefined) : Promise.resolve()
     const ambient = this.playAmbient()
-    const procedural = this.ensureProcedural()
-    const resume = this.context?.state === 'suspended' ? this.context.resume().catch(() => undefined) : Promise.resolve()
-    await Promise.allSettled([ambient, procedural, resume])
+    const procedural = this.ensureProcedural(context)
+    await Promise.allSettled([resume, ambient, procedural])
     this.sendGestureState()
+  }
+
+  private ensureContext() {
+    if (this.context) return this.context
+
+    // WebKit maps ordinary Web Audio to an ambient session on iOS, which can
+    // be muted by the Ring/Silent switch while HTML media remains audible.
+    // A playback session keeps both parts of this game's mix on one route.
+    requestPlaybackAudioSession()
+
+    const context = new AudioContext({ latencyHint: 'interactive' })
+    const ambientSource = context.createMediaElementSource(this.ambient)
+    const ambientGain = new GainNode(context, { gain: ambientVolume })
+    ambientSource.connect(ambientGain).connect(context.destination)
+
+    this.context = context
+    this.ambientSource = ambientSource
+    this.ambientGain = ambientGain
+    return context
   }
 
   private async playAmbient() {
@@ -145,18 +193,16 @@ export class SandSound {
     await this.ambient.play().catch(() => undefined)
   }
 
-  private ensureProcedural() {
+  private ensureProcedural(context: AudioContext) {
     if (this.proceduralReady) return this.proceduralReady
-    this.proceduralReady = this.createProcedural().catch((error: unknown) => {
+    this.proceduralReady = this.createProcedural(context).catch((error: unknown) => {
       console.warn('[Sandboard audio] Procedural drawing sound unavailable.', error)
     })
     return this.proceduralReady
   }
 
-  private async createProcedural() {
-    if (this.disposed || this.context) return
-    const context = new AudioContext({ latencyHint: 'interactive' })
-    this.context = context
+  private async createProcedural(context: AudioContext) {
+    if (this.disposed || this.sandNode) return
     const blob = new Blob([sandWorkletSource], { type: 'text/javascript' })
     const url = URL.createObjectURL(blob)
     try {
@@ -164,10 +210,7 @@ export class SandSound {
     } finally {
       URL.revokeObjectURL(url)
     }
-    if (this.disposed) {
-      await context.close()
-      return
-    }
+    if (this.disposed || context !== this.context) return
 
     const sandNode = new AudioWorkletNode(context, 'sand-processor', {
       numberOfInputs: 0,
