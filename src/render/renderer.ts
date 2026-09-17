@@ -4,7 +4,7 @@ import type { SandSolver } from '../simulation/solver'
 import { SandCamera } from './camera'
 import { CoconutShadow } from './coconut-shadow'
 import { BedLighting } from './lighting'
-import { SandPostProcess } from './postprocess'
+import { HDR_SCENE_FORMAT, SandPostProcess } from './postprocess'
 import { surfaceShader } from './shaders'
 
 const LIGHT_ANGLE = -0.8
@@ -28,10 +28,9 @@ export class SandRenderer {
 
   private readonly device: GPUDevice
   private readonly solver: SandSolver
-  private readonly format: GPUTextureFormat
   private readonly mobileGrainFiltering: boolean
   constructor(device: GPUDevice, solver: SandSolver, format: GPUTextureFormat, mobileGrainFiltering = false) {
-    this.device = device; this.solver = solver; this.format = format; this.mobileGrainFiltering = mobileGrainFiltering
+    this.device = device; this.solver = solver; this.mobileGrainFiltering = mobileGrainFiltering
     this.uniform = device.createBuffer({ label: 'Surface view', size: this.data.byteLength, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST })
     this.lighting = new BedLighting(device, solver, this.uniform)
     this.shadow = new CoconutShadow(device, mobileGrainFiltering)
@@ -55,7 +54,7 @@ export class SandRenderer {
     await Promise.all([this.lighting.initialize(), this.shadow.initialize(), this.post.initialize()])
     const module = await checkedShader(this.device, 'Granular surface WGSL', surfaceShader)
     this.pipeline = await this.device.createRenderPipelineAsync({ label: 'Granular sand surface', layout: 'auto',
-      vertex: { module, entryPoint: 'vertex' }, fragment: { module, entryPoint: this.mobileGrainFiltering ? 'fragmentMobile' : 'fragment', targets: [{ format: this.format }] },
+      vertex: { module, entryPoint: 'vertex' }, fragment: { module, entryPoint: this.mobileGrainFiltering ? 'fragmentMobile' : 'fragment', targets: [{ format: HDR_SCENE_FORMAT }] },
       primitive: { topology: 'triangle-list', cullMode: 'none' },
       depthStencil: { format: 'depth24plus', depthWriteEnabled: true, depthCompare: 'less' },
     })
@@ -67,7 +66,7 @@ export class SandRenderer {
       { binding: 5, resource: this.shadow.texture.createView() },
     ] }))
     this.grainPipeline = await this.device.createRenderPipelineAsync({ label: 'Loose sand grains', layout: 'auto',
-      vertex: { module, entryPoint: 'grainVertex' }, fragment: { module, entryPoint: 'grainFragment', targets: [{ format: this.format }] },
+      vertex: { module, entryPoint: 'grainVertex' }, fragment: { module, entryPoint: 'grainFragment', targets: [{ format: HDR_SCENE_FORMAT }] },
       primitive: { topology: 'triangle-list' }, depthStencil: { format: 'depth24plus', depthWriteEnabled: true, depthCompare: 'less' },
     })
     this.grainGroup = this.device.createBindGroup({ layout: this.grainPipeline.getBindGroupLayout(0), entries: [
@@ -104,7 +103,7 @@ export class SandRenderer {
     ])
     this.device.queue.writeBuffer(this.uniform, 0, this.data)
     this.lighting.encode(encoder, LIGHT_ANGLE)
-    const pass = encoder.beginRenderPass({ label: 'Sand image', colorAttachments: [{ view: this.post.target, clearValue: { r: 0.55, g: 0.44, b: 0.29, a: 1 }, loadOp: 'clear', storeOp: 'store' }],
+    const pass = encoder.beginRenderPass({ label: 'Sand image', colorAttachments: [{ view: this.post.target, clearValue: { r: 0.1778341, g: 0.12052718, b: 0.06615726, a: 1 }, loadOp: 'clear', storeOp: 'store' }],
       depthStencilAttachment: { view: this.depth.createView(), depthClearValue: 1, depthLoadOp: 'clear', depthStoreOp: 'discard' },
     })
     pass.setPipeline(this.pipeline)

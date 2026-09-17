@@ -86,12 +86,6 @@ fn grainAppearance(coordinate: vec2f) -> GrainAppearance {
   return GrainAppearance(grainOffset, grainColor, smoothstep(0.015, 0.13, boundary),
     sqrt(max(0.0, 1.0 - min(nearest / 0.42, 1.0))));
 }
-fn toneMap(color: vec3f) -> vec3f {
-  return clamp((color * (2.51 * color + 0.03)) / (color * (2.43 * color + 0.59) + 0.14), vec3f(0.0), vec3f(1.0));
-}
-fn toSrgb(color: vec3f) -> vec3f {
-  return select(color * 12.92, 1.055 * pow(max(color, vec3f(0.0)), vec3f(1.0 / 2.4)) - 0.055, color > vec3f(0.0031308));
-}
 fn environment(direction: vec3f) -> vec3f {
   let upward = max(direction.y, 0.0);
   let sky = mix(vec3f(0.72, 0.67, 0.57), vec3f(0.42, 0.56, 0.78), pow(upward, 0.45));
@@ -212,7 +206,7 @@ struct FragmentOutput { @location(0) color: vec4f, @builtin(frag_depth) depth: f
   radiance *= 1.0 - 0.2 * ring;
   let projected = project(displacedWorld);
   var output: FragmentOutput;
-  output.color = vec4f(toSrgb(toneMap(radiance)), 1.0);
+  output.color = vec4f(radiance, 1.0);
   output.depth = projected.z / projected.w;
   return output;
 }
@@ -282,7 +276,7 @@ struct FragmentOutput { @location(0) color: vec4f, @builtin(frag_depth) depth: f
   radiance *= 1.0 - 0.2 * ring;
   let projected = project(displacedWorld);
   var output: FragmentOutput;
-  output.color = vec4f(toSrgb(toneMap(radiance)), 1.0);
+  output.color = vec4f(radiance, 1.0);
   output.depth = projected.z / projected.w;
   return output;
 }
@@ -327,7 +321,7 @@ struct GrainFragmentOutput { @location(0) color: vec4f, @builtin(frag_depth) dep
   let radiance = albedo * (ambient + direct) + environment(reflect(-towardEye, normal)) * sparkle * 0.55 * smoothstep(0.72, 0.94, shade);
   let projected = project(surface);
   var output: GrainFragmentOutput;
-  output.color = vec4f(toSrgb(toneMap(radiance)), 1.0);
+  output.color = vec4f(radiance, 1.0);
   output.depth = projected.z / projected.w;
   return output;
 }
