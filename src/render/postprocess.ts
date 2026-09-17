@@ -22,6 +22,25 @@ fn bright(color: vec3f) -> vec3f {
   let weight = smoothstep(threshold - knee, threshold + knee, luma);
   return color * max((luma - threshold) / max(luma, 0.0001), 0.0) * weight;
 }
+fn filmicGrade(color: vec3f, uv: vec2f) -> vec3f {
+  let sourceLuma = max(luminance(color), 0.0001);
+  let contrastCurve = sourceLuma * sourceLuma * (3.0 - 2.0 * sourceLuma);
+  let gradedLuma = mix(sourceLuma, contrastCurve, 0.24);
+  var graded = color * (gradedLuma / sourceLuma);
+
+  let gradedGray = vec3f(luminance(graded));
+  graded = mix(gradedGray, graded, 0.95);
+
+  let mood = smoothstep(0.12, 0.86, gradedLuma);
+  let shadowTone = vec3f(0.965, 0.985, 1.025);
+  let highlightTone = vec3f(1.035, 1.005, 0.955);
+  graded *= mix(shadowTone, highlightTone, mood);
+
+  let centered = uv * 2.0 - 1.0;
+  let vignette = 1.0 - smoothstep(0.36, 1.18, dot(centered, centered)) * 0.10;
+  graded *= vignette;
+  return clamp(graded, vec3f(0.0), vec3f(1.0));
+}
 @fragment fn fragment(input: VertexOutput) -> @location(0) vec4f {
   let texel = postView.texel.xy;
   let base = textureSample(sourceTexture, postSampler, input.uv).rgb;
@@ -36,7 +55,8 @@ fn bright(color: vec3f) -> vec3f {
   for (var index = 0u; index < 16u; index++) {
     bloom += bright(textureSample(sourceTexture, postSampler, input.uv + offsets[index] * texel).rgb) * weights[index];
   }
-  let color = clamp(base + bloom * 2.15, vec3f(0.0), vec3f(1.0));
+  let bloomed = clamp(base + bloom * 2.15, vec3f(0.0), vec3f(1.0));
+  let color = filmicGrade(bloomed, input.uv);
   return vec4f(color, 1.0);
 }
 `
@@ -60,13 +80,13 @@ export class SandPostProcess {
     this.device = device
     this.sourceFormat = sourceFormat
     this.targetFormat = targetFormat
-    this.uniform = device.createBuffer({ label: 'Bloom post uniform', size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST })
-    this.sampler = device.createSampler({ label: 'Bloom post sampler', magFilter: 'linear', minFilter: 'linear', mipmapFilter: 'linear', addressModeU: 'clamp-to-edge', addressModeV: 'clamp-to-edge' })
-    this.module = device.createShaderModule({ label: 'Bloom post WGSL', code: postShader })
+    this.uniform = device.createBuffer({ label: 'Filmic post uniform', size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST })
+    this.sampler = device.createSampler({ label: 'Filmic post sampler', magFilter: 'linear', minFilter: 'linear', mipmapFilter: 'linear', addressModeU: 'clamp-to-edge', addressModeV: 'clamp-to-edge' })
+    this.module = device.createShaderModule({ label: 'Filmic post WGSL', code: postShader })
   }
 
   async initialize() {
-    this.pipeline = await this.device.createRenderPipelineAsync({ label: 'Bloom post process', layout: 'auto',
+    this.pipeline = await this.device.createRenderPipelineAsync({ label: 'Filmic post process', layout: 'auto',
       vertex: { module: this.module, entryPoint: 'vertex' },
       fragment: { module: this.module, entryPoint: 'fragment', targets: [{ format: this.targetFormat }] },
       primitive: { topology: 'triangle-list' },
@@ -94,7 +114,7 @@ export class SandPostProcess {
   }
 
   encode(encoder: GPUCommandEncoder, target: GPUTextureView) {
-    const pass = encoder.beginRenderPass({ label: 'Bloom composite', colorAttachments: [{ view: target, clearValue: { r: 0.55, g: 0.44, b: 0.29, a: 1 }, loadOp: 'clear', storeOp: 'store' }] })
+    const pass = encoder.beginRenderPass({ label: 'Filmic composite', colorAttachments: [{ view: target, clearValue: { r: 0.55, g: 0.44, b: 0.29, a: 1 }, loadOp: 'clear', storeOp: 'store' }] })
     pass.setPipeline(this.pipeline)
     pass.setBindGroup(0, this.bindGroup)
     pass.draw(3)
