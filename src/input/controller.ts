@@ -1,3 +1,4 @@
+import type { SandSound } from '../audio/sound'
 import type { SandCamera } from '../render/camera'
 import type { InterfaceElements } from '../ui/interface'
 import { StrokeQueue } from './strokes'
@@ -11,7 +12,7 @@ export class InputController {
   private readonly controller = new AbortController()
   private keyboardDrawing = false
 
-  constructor(ui: InterfaceElements, camera: SandCamera, reset: () => void) {
+  constructor(ui: InterfaceElements, camera: SandCamera, sound: SandSound, reset: () => void) {
     const { signal } = this.controller
     const canvas = ui.canvas
     const position = (event: PointerEvent) => {
@@ -26,27 +27,35 @@ export class InputController {
       canvas.setPointerCapture(event.pointerId)
       canvas.focus({ preventScroll: true })
       this.strokes.begin(position(event), pressure(event), event.timeStamp, event.pointerId)
+      sound.beginPointer(event)
       this.showPointer = false
     }, { signal })
     canvas.addEventListener('pointermove', (event) => {
       const samples = event.getCoalescedEvents?.() ?? []
-      for (const sample of samples.length ? samples : [event]) this.strokes.move(position(sample), pressure(sample), sample.timeStamp, event.pointerId)
+      for (const sample of samples.length ? samples : [event]) {
+        this.strokes.move(position(sample), pressure(sample), sample.timeStamp, event.pointerId)
+        sound.movePointer(sample, event.pointerId)
+      }
     }, { signal })
     canvas.addEventListener('pointerup', (event) => {
       if (!this.pointers.has(event.pointerId)) return
       this.strokes.move(position(event), pressure(event), event.timeStamp, event.pointerId)
+      sound.movePointer(event)
       this.strokes.end(event.pointerId)
+      sound.endPointer(event.pointerId)
       this.pointers.delete(event.pointerId)
       if (canvas.hasPointerCapture(event.pointerId)) canvas.releasePointerCapture(event.pointerId)
     }, { signal })
     const cancelPointer = (pointerId: number) => {
       this.pointers.delete(pointerId)
       this.strokes.cancel(pointerId)
+      sound.endPointer(pointerId)
     }
     const cancelAll = () => {
       this.pointers.clear()
       this.keyboardDrawing = false
       this.strokes.cancel()
+      sound.cancelAll()
     }
     canvas.addEventListener('pointercancel', (event) => cancelPointer(event.pointerId), { signal })
     canvas.addEventListener('lostpointercapture', (event) => { if (this.pointers.has(event.pointerId)) cancelPointer(event.pointerId) }, { signal })
