@@ -20,7 +20,6 @@ export async function startSandboard(ui: InterfaceElements, monitor: BootMonitor
   let inFlight = false
   let resizePending = true
   let resetPending = false
-  let targetLight = renderer.lightAngle
   const stop = () => {
     if (stopped) return
     stopped = true
@@ -51,7 +50,7 @@ export async function startSandboard(ui: InterfaceElements, monitor: BootMonitor
     gpu.device.queue.submit([encoder.finish()])
     await gpu.device.queue.onSubmittedWorkDone()
     monitor.assertHealthy()
-    input = new InputController(ui, renderer.camera, () => { resetPending = true }, () => { targetLight += Math.PI / 3 })
+    input = new InputController(ui, renderer.camera, () => { resetPending = true })
     const frame = (now: number) => {
       if (stopped) return
       animation = requestAnimationFrame(frame)
@@ -63,7 +62,6 @@ export async function startSandboard(ui: InterfaceElements, monitor: BootMonitor
         const encoder = gpu.device.createCommandEncoder()
         const activeInput = input!
         solver.encode(encoder, Array.from({ length: count }, () => activeInput.strokes.next()))
-        renderer.lightAngle += (targetLight - renderer.lightAngle) * 0.09
         renderer.encode(encoder, gpu.context.getCurrentTexture().createView(), activeInput.strokes.cursor, activeInput.showPointer)
         gpu.device.queue.submit([encoder.finish()])
         inFlight = true

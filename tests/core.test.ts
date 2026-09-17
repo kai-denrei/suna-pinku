@@ -56,7 +56,6 @@ describe('Finger sampling', () => {
       queue.begin({ x: 0, y: 0 }, 0.7, 1000)
       queue.move({ x: 0.1, y: 0 }, 0.7, 1000 + durationMs)
       queue.end()
-      queue.next()
       return queue.next().velocity.x
     }
     const fast = velocityFor(100)
@@ -65,10 +64,20 @@ describe('Finger sampling', () => {
     expect(slow).toBeCloseTo(0.1, 5)
     expect(fast / slow).toBeCloseTo(10, 5)
   })
+  test('hovering and a stationary press do not emit active contact', () => {
+    const queue = new StrokeQueue()
+    queue.move({ x: 0.04, y: -0.03 }, 0.7, 1000)
+    expect(queue.next().active).toBe(false)
+    queue.begin({ x: 0.04, y: -0.03 }, 0.7, 1010)
+    expect(queue.next().active).toBe(false)
+    queue.end()
+    queue.move({ x: 0.05, y: -0.03 }, 0.7, 1020)
+    expect(queue.next().active).toBe(false)
+  })
   test('never bridges separate gestures', () => {
     const queue = new StrokeQueue()
-    queue.begin({ x: -0.1, y: 0 }, 0.6); queue.end()
-    queue.begin({ x: 0.1, y: 0 }, 0.6); queue.end()
+    queue.begin({ x: -0.1, y: 0 }, 0.6); queue.move({ x: -0.095, y: 0 }, 0.6); queue.end()
+    queue.begin({ x: 0.1, y: 0 }, 0.6); queue.move({ x: 0.105, y: 0 }, 0.6); queue.end()
     expect(queue.next().from.x).toBe(-0.1)
     expect(queue.next().from.x).toBe(0.1)
   })

@@ -9,7 +9,7 @@ export class InputController {
   private readonly controller = new AbortController()
   private keyboardDrawing = false
 
-  constructor(ui: InterfaceElements, camera: SandCamera, reset: () => void, turnLight: () => void) {
+  constructor(ui: InterfaceElements, camera: SandCamera, reset: () => void) {
     const { signal } = this.controller
     const canvas = ui.canvas
     const position = (event: PointerEvent) => {
@@ -45,10 +45,8 @@ export class InputController {
     document.addEventListener('visibilitychange', () => { if (document.hidden) cancel() }, { signal })
     ui.radius.addEventListener('input', () => { this.strokes.radius = Number(ui.radius.value) / 1000; this.showPointer = true }, { signal })
     ui.reset.addEventListener('click', () => { cancel(); reset() }, { signal })
-    ui.light.addEventListener('click', turnLight, { signal })
     canvas.addEventListener('keydown', (event) => {
       if (event.key.toLowerCase() === 'r') { cancel(); reset() }
-      if (event.key.toLowerCase() === 'l' && !event.repeat) turnLight()
       if (event.code === 'Space') {
         event.preventDefault()
         if (!this.keyboardDrawing) { this.strokes.begin(this.strokes.position, 0.75, event.timeStamp); this.keyboardDrawing = true }

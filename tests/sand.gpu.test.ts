@@ -177,6 +177,26 @@ test('gesture speed changes bed momentum and airborne mass while conserving sand
   } finally { slow.dispose(); fast.dispose() }
 })
 
+test('inactive cursor position cannot influence the bed', async () => {
+  const left = new SandSolver(device, 64)
+  const right = new SandSolver(device, 64)
+  await Promise.all([left.initialize(), right.initialize()])
+  try {
+    const inactive = (x: number): Stroke => ({
+      from: { x, y: 0 }, to: { x, y: 0 }, velocity: { x: 0, y: 0 },
+      radius: 0.018, pressure: 1, active: false,
+    })
+    step(left, inactive(-0.12), 30)
+    step(right, inactive(0.12), 30)
+    const leftState = await readState(left)
+    const rightState = await readState(right)
+    let difference = 0
+    for (let index = 0; index < leftState.length; index++) difference = Math.max(difference, Math.abs(leftState[index] - rightState[index]))
+    expect(difference).toBeLessThan(1e-7)
+    expect(errors).toEqual([])
+  } finally { left.dispose(); right.dispose() }
+})
+
 test('horizon lighting leaves planes open, occludes trenches, and refreshes after reset and paired steps', async () => {
   const solver = new SandSolver(device, 64)
   await solver.initialize()

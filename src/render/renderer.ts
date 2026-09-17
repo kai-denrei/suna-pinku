@@ -5,6 +5,8 @@ import { SandCamera } from './camera'
 import { BedLighting } from './lighting'
 import { surfaceShader } from './shaders'
 
+const LIGHT_ANGLE = -0.8
+
 export class SandRenderer {
   readonly camera = new SandCamera()
   private readonly uniform: GPUBuffer
@@ -19,7 +21,6 @@ export class SandRenderer {
   private width = 0
   private height = 0
   private readonly data = new Float32Array(28)
-  lightAngle = -0.8
 
   private readonly device: GPUDevice
   private readonly solver: SandSolver
@@ -76,11 +77,11 @@ export class SandRenderer {
     if (!this.depth) throw new Error('Renderer needs a nonzero drawing buffer')
     this.data.set([...this.camera.eye, this.camera.tanHalfFov, ...this.camera.forward, this.camera.aspect,
       ...this.camera.right, 0, ...this.camera.up, 0,
-      Math.cos(this.lightAngle), 0.65, Math.sin(this.lightAngle), 0,
+      Math.cos(LIGHT_ANGLE), 0.65, Math.sin(LIGHT_ANGLE), 0,
       this.solver.resolution, SAND.extent, this.width, this.height,
       pointer.to.x, pointer.to.y, pointer.radius, showPointer ? 1 : 0])
     this.device.queue.writeBuffer(this.uniform, 0, this.data)
-    this.lighting.encode(encoder, this.lightAngle)
+    this.lighting.encode(encoder, LIGHT_ANGLE)
     const pass = encoder.beginRenderPass({ label: 'Sand image', colorAttachments: [{ view: target, clearValue: { r: 0.55, g: 0.44, b: 0.29, a: 1 }, loadOp: 'clear', storeOp: 'store' }],
       depthStencilAttachment: { view: this.depth.createView(), depthClearValue: 1, depthLoadOp: 'clear', depthStoreOp: 'discard' },
     })

@@ -32,7 +32,9 @@ fn toolAt(position: vec2f) -> vec4f {
   let distance = length(offset) / params.start.z;
   let envelope = max(0.0, 1.0 - distance * distance);
   let coverage = envelope * envelope;
-  return vec4f(coverage * params.start.w * params.end.z, coverage, offset);
+  let contactEnabled = select(0.0, 1.0, params.start.w > 0.0);
+  let activeCoverage = coverage * contactEnabled;
+  return vec4f(activeCoverage * params.start.w * params.end.z, activeCoverage, offset);
 }
 @compute @workgroup_size(8, 8)
 fn initialize(@builtin(global_invocation_id) invocation: vec3u) {
@@ -53,6 +55,8 @@ fn transport(@builtin(global_invocation_id) invocation: vec3u) {
   let effectiveHeight = center.x + contact.x;
   let motionDirection = params.motion.xy / max(params.motion.z, 1e-8);
   let speedResponse = params.motion.z / (params.motion.z + 0.35);
+  let contactEnabled = select(0.0, 1.0, params.start.w > 0.0);
+  let centerShell = contactEnabled * (1.0 - smoothstep(0.9, 1.55, length(contact.zw) / params.start.z));
   var outgoing = Flux(vec4f(0.0), vec4f(0.0));
   var escape = Flux(vec4f(0.0), vec4f(0.0));
   for (var axis = 0u; axis < 8u; axis++) {
@@ -65,9 +69,18 @@ fn transport(@builtin(global_invocation_id) invocation: vec3u) {
     let weight = select(0.66666667, 0.16666667, axis >= 4u);
     let axisDirection = vec2f(neighbors[axis]) / linkLength;
     let forward = max(0.0, dot(axisDirection, motionDirection));
-    let threshold = friction * params.grid.y * linkLength * select(1.0, 0.08, max(contact.x, otherContact.x) > 0.0001);
-    var amount = max(0.0, effectiveHeight - other.x - otherContact.x - threshold) * params.grid.w * params.end.w * weight;
-    amount *= 1.0 + contact.y * speedResponse * forward * 0.9;
+    let neighborShell = contactEnabled * (1.0 - smoothstep(0.9, 1.55, length(otherContact.zw) / params.start.z));
+    let contactYield = max(contact.y, otherContact.y);
+    let disturbedShell = max(centerShell, neighborShell);
+    let thresholdScale = min(mix(1.0, 0.08, contactYield), mix(1.0, 0.45, disturbedShell));
+    let threshold = friction * params.grid.y * linkLength * thresholdScale;
+    let excess = max(0.0, effectiveHeight - other.x - otherContact.x - threshold);
+    let physicalThreshold = friction * params.grid.y * linkLength * mix(1.0, 0.45, disturbedShell);
+    let physicalExcess = max(0.0, center.x - other.x - physicalThreshold);
+    let supercritical = smoothstep(params.grid.y * 1.5, params.grid.y * 5.0, physicalExcess);
+    let avalancheBoost = 1.0 + supercritical * mix(0.35, 0.85, max(contactYield, disturbedShell));
+    var amount = excess * params.grid.w * params.end.w * weight * avalancheBoost;
+    amount *= 1.0 + contact.y * speedResponse * forward * 0.55;
     let edge = max(0.0, contact.x - otherContact.x) / max(contact.x, 1e-7);
     let sideways = contact.y * (1.0 - abs(dot(axisDirection, motionDirection))) * 0.06;
     let escapeWeight = (edge + sideways) * (1.0 + speedResponse * forward * 0.8) * weight;
@@ -83,7 +96,8 @@ fn transport(@builtin(global_invocation_id) invocation: vec3u) {
   let overlap = max(0.0, center.x - targetHeight);
   let existing = totalFlux(outgoing);
   let escapeTotal = totalFlux(escape);
-  let extra = max(0.0, overlap - existing);
+  let evacuationFraction = mix(0.32, 0.46, speedResponse);
+  let extra = max(0.0, overlap * evacuationFraction - existing);
   if (extra > 0.0 && escapeTotal > 1e-8) {
     outgoing.axial += escape.axial * (extra / escapeTotal);
     outgoing.diagonal += escape.diagonal * (extra / escapeTotal);

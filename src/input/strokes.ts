@@ -47,25 +47,31 @@ export class StrokeQueue {
   }
 
   next(): Stroke {
-    const sample = this.samples[0]
-    if (!sample) {
-      return { ...idleStroke(), from: this.position, to: this.position, radius: this.radius, pressure: this.currentPressure, active: this.held }
+    while (this.samples.length) {
+      const sample = this.samples[0]
+      if (sample.start || !this.anchor) {
+        this.anchor = { x: sample.x, y: sample.y, time: sample.time }
+        this.samples.shift()
+        continue
+      }
+      const from = this.anchor
+      const delta = { x: sample.x - from.x, y: sample.y - from.y }
+      const distance = Math.hypot(delta.x, delta.y)
+      if (distance <= 1e-9) {
+        this.anchor = { x: sample.x, y: sample.y, time: sample.time }
+        this.samples.shift()
+        continue
+      }
+      const fraction = Math.min(1, this.radius * 0.65 / distance)
+      const to = { x: from.x + delta.x * fraction, y: from.y + delta.y * fraction }
+      const toTime = from.time + (sample.time - from.time) * fraction
+      const duration = Math.max(minimumSampleSeconds, (toTime - from.time) / 1000)
+      const velocity = { x: (to.x - from.x) / duration, y: (to.y - from.y) / duration }
+      if (fraction === 1) this.samples.shift()
+      this.anchor = { ...to, time: toTime }
+      return { from, to, velocity, radius: this.radius, pressure: sample.pressure, active: true }
     }
-    if (sample.start || !this.anchor) {
-      this.anchor = { x: sample.x, y: sample.y, time: sample.time }
-      sample.start = false
-    }
-    const from = this.anchor
-    const delta = { x: sample.x - from.x, y: sample.y - from.y }
-    const distance = Math.hypot(delta.x, delta.y)
-    const fraction = Math.min(1, this.radius * 0.65 / Math.max(distance, 1e-9))
-    const to = { x: from.x + delta.x * fraction, y: from.y + delta.y * fraction }
-    const toTime = from.time + (sample.time - from.time) * fraction
-    const duration = Math.max(minimumSampleSeconds, (toTime - from.time) / 1000)
-    const velocity = distance > 1e-9 ? { x: (to.x - from.x) / duration, y: (to.y - from.y) / duration } : { x: 0, y: 0 }
-    if (fraction === 1) this.samples.shift()
-    this.anchor = { ...to, time: toTime }
-    return { from, to, velocity, radius: this.radius, pressure: sample.pressure, active: true }
+    return { ...idleStroke(), from: this.position, to: this.position, radius: this.radius, pressure: this.currentPressure }
   }
 
   get cursor(): Stroke { return { ...idleStroke(), from: this.position, to: this.position, radius: this.radius } }
