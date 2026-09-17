@@ -55,6 +55,7 @@ export class SandSound {
   private ambientGain: GainNode | undefined
   private sandNode: AudioWorkletNode | undefined
   private proceduralReady: Promise<void> | undefined
+  private prepareReady: Promise<void> | undefined
   private disposed = false
 
   constructor() {
@@ -66,15 +67,21 @@ export class SandSound {
     this.ambient.volume = 1
     this.ambient.setAttribute('playsinline', '')
 
-    const unlock = () => { void this.unlock() }
+    const unlock = () => { this.activatePlayback() }
     const { signal } = this.unlockController
     window.addEventListener('pointerdown', unlock, { signal, passive: true })
     window.addEventListener('keydown', unlock, { signal })
   }
 
+  prepare() {
+    if (this.prepareReady) return this.prepareReady
+    this.prepareReady = this.prepareAudio()
+    return this.prepareReady
+  }
+
   beginPointer(event: PointerEvent) {
     if (this.disposed) return
-    void this.unlock()
+    this.activatePlayback()
     this.gestures.set(event.pointerId, {
       x: event.clientX,
       y: event.clientY,
@@ -159,14 +166,28 @@ export class SandSound {
     this.ambient.load()
   }
 
-  private async unlock() {
+  private async prepareAudio() {
     if (this.disposed) return
     const context = this.ensureContext()
-    const resume = context.state === 'suspended' ? context.resume().catch(() => undefined) : Promise.resolve()
-    const ambient = this.playAmbient()
     const procedural = this.ensureProcedural(context)
-    await Promise.allSettled([resume, ambient, procedural])
-    this.sendGestureState()
+
+    // Make a best-effort autoplay attempt as soon as the scene is setting up.
+    // Browsers that permit autoplay can start immediately; restricted browsers
+    // keep the graph primed so the first real gesture only has to resume it.
+    this.activatePlayback()
+    await procedural
+  }
+
+  private activatePlayback() {
+    if (this.disposed) return
+    const context = this.ensureContext()
+
+    // Keep resume() and media play() in the same synchronous user-activation
+    // stack. In particular, do not await AudioWorklet.addModule() here: WebKit
+    // can consume the transient activation before an asynchronous continuation.
+    if (context.state !== 'running') void context.resume().catch(() => undefined)
+    void this.playAmbient()
+    void this.ensureProcedural(context).then(() => this.sendGestureState())
   }
 
   private ensureContext() {

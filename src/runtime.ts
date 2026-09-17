@@ -15,6 +15,7 @@ export async function startSandboard(ui: InterfaceElements, monitor: BootMonitor
   const solver = new SandSolver(gpu.device)
   const renderer = new SandRenderer(gpu.device, solver, gpu.format, useMobileGrainFiltering())
   const sound = new SandSound()
+  const soundReady = sound.prepare()
   const clock = new FixedClock(SAND.step, SAND.maxSteps)
   const listeners = new AbortController()
   let input: InputController | undefined
@@ -54,6 +55,7 @@ export async function startSandboard(ui: InterfaceElements, monitor: BootMonitor
     gpu.device.queue.submit([encoder.finish()])
     await gpu.device.queue.onSubmittedWorkDone()
     monitor.assertHealthy()
+    await soundReady
     input = new InputController(ui, renderer.camera, sound, () => { resetPending = true })
     const frame = (now: number) => {
       if (stopped) return
