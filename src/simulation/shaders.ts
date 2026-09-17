@@ -1,19 +1,30 @@
+import { SAND } from '../config'
 import { fluxLayout } from './flux'
 
-export const simulationShader = `
-${fluxLayout}
-struct Params {
-  grid: vec4f,
-  physics: vec4f,
+const paramsLayout = `
+struct ToolContact {
   start: vec4f,
   end: vec4f,
   motion: vec4f,
 }
+struct Params {
+  grid: vec4f,
+  physics: vec4f,
+  tool: vec4f,
+  contacts: array<ToolContact, ${SAND.maxContacts}>,
+}
+`
+
+export const simulationShader = `
+${fluxLayout}
+${paramsLayout}
 @group(0) @binding(0) var<uniform> params: Params;
 @group(0) @binding(1) var<storage, read> source: array<vec4f>;
 @group(0) @binding(2) var<storage, read_write> destination: array<vec4f>;
 @group(0) @binding(3) var<storage, read_write> flux: array<Flux>;
 @group(0) @binding(4) var<storage, read_write> exchange: array<atomic<i32>>;
+@group(0) @binding(5) var<storage, read_write> contactField: array<vec4f>;
+@group(0) @binding(6) var<storage, read_write> contactPressure: array<f32>;
 
 fn hash(position: vec2f) -> f32 {
   return fract(sin(dot(position, vec2f(127.1, 311.7))) * 43758.5453);
@@ -25,16 +36,43 @@ fn address(cell: vec2i) -> u32 {
 fn location(cell: vec2i) -> vec2f {
   return (vec2f(cell) + 0.5) * params.grid.y - params.grid.z * 0.5;
 }
-fn toolAt(position: vec2f) -> vec4f {
-  let segment = params.end.xy - params.start.xy;
-  let along = clamp(dot(position - params.start.xy, segment) / max(dot(segment, segment), 1e-10), 0.0, 1.0);
-  let offset = position - params.start.xy - along * segment;
-  let distance = length(offset) / params.start.z;
-  let envelope = max(0.0, 1.0 - distance * distance);
-  let coverage = envelope * envelope;
-  let contactEnabled = select(0.0, 1.0, params.start.w > 0.0);
-  let activeCoverage = coverage * contactEnabled;
-  return vec4f(activeCoverage * params.start.w * params.end.z, activeCoverage, offset);
+struct ContactSample {
+  field: vec4f,
+  pressure: f32,
+}
+fn sampleTool(position: vec2f) -> ContactSample {
+  var strongest = 0.0;
+  var coverage = 0.0;
+  var shell = 0.0;
+  var motion = vec2f(0.0);
+  var pressure = 0.0;
+  for (var index = 0u; index < ${SAND.maxContacts}u; index++) {
+    if (f32(index) >= params.tool.x) { break; }
+    let tool = params.contacts[index];
+    let segment = tool.end.xy - tool.start.xy;
+    let along = clamp(dot(position - tool.start.xy, segment) / max(dot(segment, segment), 1e-10), 0.0, 1.0);
+    let offset = position - tool.start.xy - along * segment;
+    let distance = length(offset) / max(tool.start.z, 1e-7);
+    let envelope = max(0.0, 1.0 - distance * distance);
+    let localCoverage = envelope * envelope;
+    let strength = localCoverage * tool.start.w;
+    shell = max(shell, 1.0 - smoothstep(0.9, 1.55, distance));
+    if (strength > strongest) {
+      strongest = strength;
+      coverage = localCoverage;
+      motion = tool.motion.xy;
+      pressure = tool.start.w;
+    }
+  }
+  return ContactSample(vec4f(coverage, shell, motion), pressure);
+}
+fn contactAt(cell: vec2i) -> vec4f {
+  if (params.tool.x <= 0.0) { return vec4f(0.0); }
+  return contactField[address(cell)];
+}
+fn pressureAt(cell: vec2i) -> f32 {
+  if (params.tool.x <= 0.0) { return 0.0; }
+  return contactPressure[address(cell)];
 }
 @compute @workgroup_size(8, 8)
 fn initialize(@builtin(global_invocation_id) invocation: vec3u) {
@@ -46,43 +84,54 @@ fn initialize(@builtin(global_invocation_id) invocation: vec3u) {
   destination[address(cell)] = vec4f(height, 0.0, 0.0, 0.0);
 }
 @compute @workgroup_size(8, 8)
+fn contact(@builtin(global_invocation_id) invocation: vec3u) {
+  if (any(invocation.xy >= vec2u(u32(params.grid.x)))) { return; }
+  let cell = vec2i(invocation.xy);
+  let sample = sampleTool(location(cell));
+  contactField[address(cell)] = sample.field;
+  contactPressure[address(cell)] = sample.pressure;
+}
+@compute @workgroup_size(8, 8)
 fn transport(@builtin(global_invocation_id) invocation: vec3u) {
   if (any(invocation.xy >= vec2u(u32(params.grid.x)))) { return; }
   let cell = vec2i(invocation.xy);
   let position = location(cell);
   let center = source[address(cell)];
-  let contact = toolAt(position);
-  let effectiveHeight = center.x + contact.x;
-  let motionDirection = params.motion.xy / max(params.motion.z, 1e-8);
-  let speedResponse = params.motion.z / (params.motion.z + 0.35);
-  let contactEnabled = select(0.0, 1.0, params.start.w > 0.0);
-  let centerShell = contactEnabled * (1.0 - smoothstep(0.9, 1.55, length(contact.zw) / params.start.z));
+  let toolContact = contactAt(cell);
+  let toolPressure = pressureAt(cell);
+  let penetration = toolContact.x * toolPressure * params.tool.y;
+  let effectiveHeight = center.x + penetration;
+  let toolSpeed = length(toolContact.zw);
+  let motionDirection = toolContact.zw / max(toolSpeed, 1e-8);
+  let speedResponse = toolSpeed / (toolSpeed + 0.35);
+  let centerShell = toolContact.y;
   var outgoing = Flux(vec4f(0.0), vec4f(0.0));
   var escape = Flux(vec4f(0.0), vec4f(0.0));
   for (var axis = 0u; axis < 8u; axis++) {
     let neighbor = cell + neighbors[axis];
     if (any(neighbor < vec2i(0)) || any(neighbor >= vec2i(i32(params.grid.x)))) { continue; }
     let other = source[address(neighbor)];
-    let otherContact = toolAt(location(neighbor));
+    let otherContact = contactAt(neighbor);
+    let otherPenetration = otherContact.x * pressureAt(neighbor) * params.tool.y;
     let friction = mix(params.physics.z, params.physics.w, clamp(max(center.y, other.y) * 35.0, 0.0, 1.0));
     let linkLength = select(1.0, 1.41421356, axis >= 4u);
     let weight = select(0.66666667, 0.16666667, axis >= 4u);
     let axisDirection = vec2f(neighbors[axis]) / linkLength;
     let forward = max(0.0, dot(axisDirection, motionDirection));
-    let neighborShell = contactEnabled * (1.0 - smoothstep(0.9, 1.55, length(otherContact.zw) / params.start.z));
-    let contactYield = max(contact.y, otherContact.y);
+    let neighborShell = otherContact.y;
+    let contactYield = max(toolContact.x, otherContact.x);
     let disturbedShell = max(centerShell, neighborShell);
     let thresholdScale = min(mix(1.0, 0.08, contactYield), mix(1.0, 0.45, disturbedShell));
     let threshold = friction * params.grid.y * linkLength * thresholdScale;
-    let excess = max(0.0, effectiveHeight - other.x - otherContact.x - threshold);
+    let excess = max(0.0, effectiveHeight - other.x - otherPenetration - threshold);
     let physicalThreshold = friction * params.grid.y * linkLength * mix(1.0, 0.45, disturbedShell);
     let physicalExcess = max(0.0, center.x - other.x - physicalThreshold);
     let supercritical = smoothstep(params.grid.y * 1.5, params.grid.y * 5.0, physicalExcess);
     let avalancheBoost = 1.0 + supercritical * mix(0.35, 0.85, max(contactYield, disturbedShell));
-    var amount = excess * params.grid.w * params.end.w * weight * avalancheBoost;
-    amount *= 1.0 + contact.y * speedResponse * forward * 0.55;
-    let edge = max(0.0, contact.x - otherContact.x) / max(contact.x, 1e-7);
-    let sideways = contact.y * (1.0 - abs(dot(axisDirection, motionDirection))) * 0.06;
+    var amount = excess * params.grid.w * params.tool.z * weight * avalancheBoost;
+    amount *= 1.0 + toolContact.x * speedResponse * forward * 0.55;
+    let edge = max(0.0, penetration - otherPenetration) / max(penetration, 1e-7);
+    let sideways = toolContact.x * (1.0 - abs(dot(axisDirection, motionDirection))) * 0.06;
     let escapeWeight = (edge + sideways) * (1.0 + speedResponse * forward * 0.8) * weight;
     if (axis < 4u) {
       outgoing.axial[axis] = amount;
@@ -92,7 +141,7 @@ fn transport(@builtin(global_invocation_id) invocation: vec3u) {
       escape.diagonal[axis - 4u] = escapeWeight;
     }
   }
-  let targetHeight = params.physics.x - contact.x;
+  let targetHeight = params.physics.x - penetration;
   let overlap = max(0.0, center.x - targetHeight);
   let existing = totalFlux(outgoing);
   let escapeTotal = totalFlux(escape);
@@ -125,12 +174,14 @@ fn integrate(@builtin(global_invocation_id) invocation: vec3u) {
   let transferred = f32(atomicExchange(&exchange[index], 0)) * 1e-9;
   let height = current.x + totalFlux(incoming) - totalFlux(outgoing) + transferred;
   let moved = totalFlux(incoming) + totalFlux(outgoing);
-  let contact = toolAt(location(cell));
-  let contactActivity = contact.y * params.start.w * params.motion.z * 0.004;
+  let toolContact = contactAt(cell);
+  let toolSpeed = length(toolContact.zw);
+  let toolPressure = pressureAt(cell);
+  let contactActivity = toolContact.x * toolPressure * toolSpeed * 0.004;
   let activity = max(max(current.y * exp(-params.grid.w * 10.0), moved / params.grid.w), contactActivity);
   let transportVelocity = (fluxVector(outgoing) - fluxVector(incoming)) * params.grid.y / max(height * params.grid.w, 1e-7);
-  let slipCoupling = 0.38 / (1.0 + params.motion.z * 0.30);
-  let toolVelocity = params.motion.xy * contact.y * params.start.w * slipCoupling;
+  let slipCoupling = 0.38 / (1.0 + toolSpeed * 0.30);
+  let toolVelocity = toolContact.zw * toolContact.x * toolPressure * slipCoupling;
   let velocity = transportVelocity + toolVelocity;
   destination[index] = vec4f(height, activity, mix(current.zw, velocity, 0.4));
 }
@@ -138,7 +189,7 @@ fn integrate(@builtin(global_invocation_id) invocation: vec3u) {
 
 export const particleShader = `
 ${fluxLayout}
-struct Params { grid: vec4f, physics: vec4f, start: vec4f, end: vec4f, motion: vec4f }
+${paramsLayout}
 struct Grain { position: vec4f, velocity: vec4f }
 @group(0) @binding(0) var<uniform> params: Params;
 @group(0) @binding(1) var<storage, read> bed: array<vec4f>;
@@ -186,12 +237,12 @@ fn animate(@builtin(global_invocation_id) invocation: vec3u) {
     grain.position.x = clamp(grain.position.x, -limit, limit);
     grain.position.z = clamp(grain.position.z, -limit, limit);
     let cell = address(grain.position.xz);
-    let contact = contactAt(grain.position.xz);
-    if (grain.position.y <= contact.x + 0.00014) {
-      let normal = normalize(vec3f(-contact.y, 1.0, -contact.z));
+    let surface = contactAt(grain.position.xz);
+    if (grain.position.y <= surface.x + 0.00014) {
+      let normal = normalize(vec3f(-surface.y, 1.0, -surface.z));
       let normalSpeed = dot(grain.velocity.xyz, normal);
       if (normalSpeed < -0.08 && grain.velocity.w < 0.22) {
-        grain.position.y = contact.x + 0.00018;
+        grain.position.y = surface.x + 0.00018;
         let tangent = grain.velocity.xyz - normal * normalSpeed;
         let friction = max(0.0, 1.0 - params.physics.w * 1.22 * abs(normalSpeed) / max(length(tangent), 1e-7));
         grain.velocity = vec4f(tangent * friction - normal * normalSpeed * 0.22, grain.velocity.w);

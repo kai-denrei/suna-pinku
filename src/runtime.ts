@@ -45,7 +45,7 @@ export async function startSandboard(ui: InterfaceElements, monitor: BootMonitor
     monitor.stage('Rendering the first surface')
     resize()
     const encoder = gpu.device.createCommandEncoder()
-    solver.encode(encoder, [idleStroke(), idleStroke()])
+    solver.encode(encoder, [[], []])
     renderer.encode(encoder, gpu.context.getCurrentTexture().createView(), idleStroke())
     gpu.device.queue.submit([encoder.finish()])
     await gpu.device.queue.onSubmittedWorkDone()
@@ -61,7 +61,7 @@ export async function startSandboard(ui: InterfaceElements, monitor: BootMonitor
         const count = clock.advance(now)
         const encoder = gpu.device.createCommandEncoder()
         const activeInput = input!
-        solver.encode(encoder, Array.from({ length: count }, () => activeInput.strokes.next()))
+        solver.encode(encoder, Array.from({ length: count }, () => activeInput.strokes.nextBatch()))
         renderer.encode(encoder, gpu.context.getCurrentTexture().createView(), activeInput.strokes.cursor, activeInput.showPointer)
         gpu.device.queue.submit([encoder.finish()])
         inFlight = true

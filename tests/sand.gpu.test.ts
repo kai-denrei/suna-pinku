@@ -54,7 +54,7 @@ async function particleMass(solver: SandSolver) {
 function step(solver: SandSolver, stroke: Stroke, count: number) {
   for (let index = 0; index < count; index++) {
     const encoder = device.createCommandEncoder()
-    solver.encode(encoder, [stroke])
+    solver.encode(encoder, [[stroke]])
     device.queue.submit([encoder.finish()])
   }
 }

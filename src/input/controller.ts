@@ -2,10 +2,12 @@ import type { SandCamera } from '../render/camera'
 import type { InterfaceElements } from '../ui/interface'
 import { StrokeQueue } from './strokes'
 
+const keyboardPointerId = -1
+
 export class InputController {
   readonly strokes = new StrokeQueue()
   showPointer = false
-  private pointerId: number | undefined
+  private readonly pointers = new Set<number>()
   private readonly controller = new AbortController()
   private keyboardDrawing = false
 
@@ -18,45 +20,52 @@ export class InputController {
     }
     const pressure = (event: PointerEvent) => event.pointerType === 'pen' ? event.pressure : 0.75
     canvas.addEventListener('pointerdown', (event) => {
-      if (this.pointerId !== undefined || event.button !== 0) return
-      this.pointerId = event.pointerId
+      if (event.pointerType === 'mouse' && event.button !== 0) return
+      if (this.pointers.has(event.pointerId)) return
+      this.pointers.add(event.pointerId)
       canvas.setPointerCapture(event.pointerId)
       canvas.focus({ preventScroll: true })
-      this.strokes.begin(position(event), pressure(event), event.timeStamp)
+      this.strokes.begin(position(event), pressure(event), event.timeStamp, event.pointerId)
       this.showPointer = false
-      ui.hint.classList.add('hidden')
     }, { signal })
     canvas.addEventListener('pointermove', (event) => {
-      if (this.pointerId !== undefined && event.pointerId !== this.pointerId) return
       const samples = event.getCoalescedEvents?.() ?? []
-      for (const sample of samples.length ? samples : [event]) this.strokes.move(position(sample), pressure(sample), sample.timeStamp)
+      for (const sample of samples.length ? samples : [event]) this.strokes.move(position(sample), pressure(sample), sample.timeStamp, event.pointerId)
     }, { signal })
     canvas.addEventListener('pointerup', (event) => {
-      if (event.pointerId !== this.pointerId) return
-      this.strokes.move(position(event), pressure(event), event.timeStamp)
-      this.strokes.end()
-      this.pointerId = undefined
-      canvas.releasePointerCapture(event.pointerId)
+      if (!this.pointers.has(event.pointerId)) return
+      this.strokes.move(position(event), pressure(event), event.timeStamp, event.pointerId)
+      this.strokes.end(event.pointerId)
+      this.pointers.delete(event.pointerId)
+      if (canvas.hasPointerCapture(event.pointerId)) canvas.releasePointerCapture(event.pointerId)
     }, { signal })
-    const cancel = () => { this.pointerId = undefined; this.keyboardDrawing = false; this.strokes.cancel() }
-    canvas.addEventListener('pointercancel', cancel, { signal })
-    canvas.addEventListener('lostpointercapture', () => { if (this.pointerId !== undefined) cancel() }, { signal })
-    window.addEventListener('blur', cancel, { signal })
-    document.addEventListener('visibilitychange', () => { if (document.hidden) cancel() }, { signal })
+    const cancelPointer = (pointerId: number) => {
+      this.pointers.delete(pointerId)
+      this.strokes.cancel(pointerId)
+    }
+    const cancelAll = () => {
+      this.pointers.clear()
+      this.keyboardDrawing = false
+      this.strokes.cancel()
+    }
+    canvas.addEventListener('pointercancel', (event) => cancelPointer(event.pointerId), { signal })
+    canvas.addEventListener('lostpointercapture', (event) => { if (this.pointers.has(event.pointerId)) cancelPointer(event.pointerId) }, { signal })
+    window.addEventListener('blur', cancelAll, { signal })
+    document.addEventListener('visibilitychange', () => { if (document.hidden) cancelAll() }, { signal })
     ui.radius.addEventListener('input', () => { this.strokes.radius = Number(ui.radius.value) / 1000; this.showPointer = true }, { signal })
-    ui.reset.addEventListener('click', () => { cancel(); reset() }, { signal })
+    ui.reset.addEventListener('click', () => { cancelAll(); reset() }, { signal })
     canvas.addEventListener('keydown', (event) => {
-      if (event.key.toLowerCase() === 'r') { cancel(); reset() }
+      if (event.key.toLowerCase() === 'r') { cancelAll(); reset() }
       if (event.code === 'Space') {
         event.preventDefault()
-        if (!this.keyboardDrawing) { this.strokes.begin(this.strokes.position, 0.75, event.timeStamp); this.keyboardDrawing = true }
+        if (!this.keyboardDrawing) { this.strokes.begin(this.strokes.position, 0.75, event.timeStamp, keyboardPointerId); this.keyboardDrawing = true }
       }
       const movement: Record<string, [number, number]> = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] }
       const direction = movement[event.key]
       if (direction) {
         event.preventDefault()
         this.showPointer = true
-        this.strokes.move({ x: this.strokes.position.x + direction[0] * 0.003, y: this.strokes.position.y + direction[1] * 0.003 }, 0.75, event.timeStamp)
+        this.strokes.move({ x: this.strokes.position.x + direction[0] * 0.003, y: this.strokes.position.y + direction[1] * 0.003 }, 0.75, event.timeStamp, keyboardPointerId)
       }
       if (event.key === '[' || event.key === ']') {
         ui.radius.value = String(Number(ui.radius.value) + (event.key === '[' ? -1 : 1))
@@ -65,7 +74,7 @@ export class InputController {
       }
     }, { signal })
     canvas.addEventListener('keyup', (event) => {
-      if (event.code === 'Space') { this.strokes.end(); this.keyboardDrawing = false }
+      if (event.code === 'Space') { this.strokes.end(keyboardPointerId); this.keyboardDrawing = false }
     }, { signal })
   }
   dispose() { this.controller.abort(); this.strokes.cancel() }

@@ -87,6 +87,36 @@ describe('Finger sampling', () => {
     queue.cancel()
     expect(queue.next().active).toBe(false)
   })
+  test('travelled distance is independent of input event density', () => {
+    const travelled = (samples: number) => {
+      const queue = new StrokeQueue()
+      queue.begin({ x: -0.1, y: 0 }, 0.75, 1000)
+      for (let index = 1; index <= samples; index++) {
+        queue.move({ x: -0.1 + 0.2 * index / samples, y: 0 }, 0.75, 1000 + 400 * index / samples)
+      }
+      queue.end()
+      let distance = 0
+      for (;;) {
+        const batch = queue.nextBatch()
+        if (!batch.length) break
+        for (const stroke of batch) distance += Math.hypot(stroke.to.x - stroke.from.x, stroke.to.y - stroke.from.y)
+      }
+      return distance
+    }
+    expect(travelled(4)).toBeCloseTo(0.2, 6)
+    expect(travelled(240)).toBeCloseTo(0.2, 6)
+  })
+  test('batches independent simultaneous pointers without bridging them', () => {
+    const queue = new StrokeQueue()
+    queue.begin({ x: -0.12, y: -0.03 }, 0.75, 1000, 11)
+    queue.begin({ x: 0.12, y: 0.03 }, 0.75, 1000, 22)
+    queue.move({ x: -0.08, y: -0.03 }, 0.75, 1040, 11)
+    queue.move({ x: 0.08, y: 0.03 }, 0.75, 1040, 22)
+    const batch = queue.nextBatch()
+    expect(batch.length).toBeGreaterThanOrEqual(2)
+    expect(batch.some((stroke) => stroke.from.x < 0 && stroke.to.x < 0)).toBe(true)
+    expect(batch.some((stroke) => stroke.from.x > 0 && stroke.to.x > 0)).toBe(true)
+  })
 })
 
 test('camera projection and bed picking agree at center and preserve orientation', () => {

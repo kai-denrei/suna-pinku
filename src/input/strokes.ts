@@ -1,78 +1,150 @@
 import { SAND, idleStroke, type Point, type Stroke } from '../config'
 
 type TimedPoint = Point & { time: number }
-type Sample = TimedPoint & { pressure: number; start: boolean }
+type Track = {
+  held: boolean
+  pressure: number
+  start: TimedPoint
+  latest: TimedPoint
+  latestTime: number | undefined
+  segments: Stroke[]
+}
 
 const minimumSampleSeconds = 0.0001
+const minimumMovement = 1e-7
 
 export class StrokeQueue {
-  private samples: Sample[] = []
-  private anchor: TimedPoint | undefined
-  private held = false
+  private readonly tracks = new Map<number, Track>()
+  private roundRobin = 0
   private currentPressure = 0.7
-  private latestTime: number | undefined
   position: Point = { x: 0, y: 0 }
   radius: number = SAND.radius
 
-  begin(point: Point, pressure: number, time?: number) {
-    this.held = true
-    this.push(point, pressure, true, time)
+  begin(point: Point, pressure: number, time?: number, pointerId = 0) {
+    const bounded = this.bound(point)
+    const existing = this.tracks.get(pointerId)
+    const timestamp = this.timestamp(existing, time)
+    const start = { ...bounded, time: timestamp }
+    this.position = bounded
+    this.currentPressure = this.clampPressure(pressure)
+    this.tracks.set(pointerId, {
+      held: true,
+      pressure: this.currentPressure,
+      start,
+      latest: start,
+      latestTime: timestamp,
+      segments: existing?.segments ?? [],
+    })
   }
-  move(point: Point, pressure: number, time?: number) {
-    this.position = point
-    if (this.held) this.push(point, pressure, false, time)
-  }
-  end() { this.held = false }
-  cancel() { this.held = false; this.samples.length = 0; this.anchor = undefined; this.latestTime = undefined }
 
-  private timestamp(time?: number) {
-    const fallback = (this.latestTime ?? -SAND.step * 1000) + SAND.step * 1000
+  move(point: Point, pressure: number, time?: number, pointerId = 0) {
+    const bounded = this.bound(point)
+    this.position = bounded
+    this.currentPressure = this.clampPressure(pressure)
+    const track = this.tracks.get(pointerId)
+    if (!track || !track.held) return
+    const timestamp = this.timestamp(track, time)
+    track.pressure = this.currentPressure
+    track.latestTime = timestamp
+    track.latest = { ...bounded, time: timestamp }
+    this.subdivide(track)
+  }
+
+  end(pointerId = 0) {
+    const track = this.tracks.get(pointerId)
+    if (!track) return
+    track.held = false
+    this.flush(track)
+    this.prune(pointerId, track)
+  }
+
+  cancel(pointerId?: number) {
+    if (pointerId === undefined) {
+      this.tracks.clear()
+      this.roundRobin = 0
+      return
+    }
+    this.tracks.delete(pointerId)
+    if (this.roundRobin >= this.tracks.size) this.roundRobin = 0
+  }
+
+  private clampPressure(pressure: number) { return Math.max(0.1, Math.min(1, pressure)) }
+
+  private bound(point: Point) {
+    const limit = SAND.extent / 2 - 0.03
+    return { x: Math.max(-limit, Math.min(limit, point.x)), y: Math.max(-limit, Math.min(limit, point.y)) }
+  }
+
+  private timestamp(track: Track | undefined, time?: number) {
+    const previous = track?.latestTime
+    const fallback = (previous ?? -SAND.step * 1000) + SAND.step * 1000
     const candidate = time !== undefined && Number.isFinite(time) ? time : fallback
-    const result = this.latestTime === undefined ? candidate : Math.max(this.latestTime, candidate)
-    this.latestTime = result
+    return previous === undefined ? candidate : Math.max(previous, candidate)
+  }
+
+  private spacing() { return Math.max(SAND.extent / SAND.resolution * 1.5, this.radius * 0.5) }
+
+  private makeStroke(from: TimedPoint, to: TimedPoint, pressure: number): Stroke {
+    const duration = Math.max(minimumSampleSeconds, (to.time - from.time) / 1000)
+    return {
+      from: { x: from.x, y: from.y }, to: { x: to.x, y: to.y },
+      velocity: { x: (to.x - from.x) / duration, y: (to.y - from.y) / duration },
+      radius: this.radius, pressure, active: true,
+    }
+  }
+
+  private subdivide(track: Track) {
+    const spacing = this.spacing()
+    let distance = Math.hypot(track.latest.x - track.start.x, track.latest.y - track.start.y)
+    while (distance >= spacing) {
+      const fraction = spacing / distance
+      const to: TimedPoint = {
+        x: track.start.x + (track.latest.x - track.start.x) * fraction,
+        y: track.start.y + (track.latest.y - track.start.y) * fraction,
+        time: track.start.time + (track.latest.time - track.start.time) * fraction,
+      }
+      track.segments.push(this.makeStroke(track.start, to, track.pressure))
+      track.start = to
+      distance = Math.hypot(track.latest.x - track.start.x, track.latest.y - track.start.y)
+    }
+  }
+
+  private flush(track: Track) {
+    const distance = Math.hypot(track.latest.x - track.start.x, track.latest.y - track.start.y)
+    if (distance > minimumMovement) track.segments.push(this.makeStroke(track.start, track.latest, track.pressure))
+    track.start = track.latest
+  }
+
+  private prune(pointerId: number, track: Track) {
+    if (!track.held && track.segments.length === 0) this.tracks.delete(pointerId)
+  }
+
+  private drain(limit: number): Stroke[] {
+    for (const track of this.tracks.values()) if (track.held) this.flush(track)
+    const entries = [...this.tracks.entries()]
+    if (!entries.length) return []
+    const result: Stroke[] = []
+    let emptyPasses = 0
+    let cursor = this.roundRobin % entries.length
+    while (result.length < limit && emptyPasses < entries.length) {
+      const [pointerId, track] = entries[cursor]
+      const stroke = track.segments.shift()
+      if (stroke) {
+        result.push(stroke)
+        emptyPasses = 0
+        this.prune(pointerId, track)
+      } else {
+        emptyPasses++
+      }
+      cursor = (cursor + 1) % entries.length
+    }
+    this.roundRobin = cursor
     return result
   }
 
-  private push(point: Point, pressure: number, start: boolean, time?: number) {
-    if (!Number.isFinite(point.x + point.y + pressure)) return
-    const limit = SAND.extent / 2 - 0.03
-    const bounded = { x: Math.max(-limit, Math.min(limit, point.x)), y: Math.max(-limit, Math.min(limit, point.y)) }
-    this.position = bounded
-    this.currentPressure = Math.max(0.1, Math.min(1, pressure))
-    this.samples.push({ ...bounded, pressure: this.currentPressure, start, time: this.timestamp(time) })
-    if (this.samples.length > 256) {
-      this.samples.splice(0, this.samples.length - 128)
-      this.samples[0].start = true
-    }
-  }
+  nextBatch(): Stroke[] { return this.drain(SAND.maxContacts) }
 
-  next(): Stroke {
-    while (this.samples.length) {
-      const sample = this.samples[0]
-      if (sample.start || !this.anchor) {
-        this.anchor = { x: sample.x, y: sample.y, time: sample.time }
-        this.samples.shift()
-        continue
-      }
-      const from = this.anchor
-      const delta = { x: sample.x - from.x, y: sample.y - from.y }
-      const distance = Math.hypot(delta.x, delta.y)
-      if (distance <= 1e-9) {
-        this.anchor = { x: sample.x, y: sample.y, time: sample.time }
-        this.samples.shift()
-        continue
-      }
-      const fraction = Math.min(1, this.radius * 0.65 / distance)
-      const to = { x: from.x + delta.x * fraction, y: from.y + delta.y * fraction }
-      const toTime = from.time + (sample.time - from.time) * fraction
-      const duration = Math.max(minimumSampleSeconds, (toTime - from.time) / 1000)
-      const velocity = { x: (to.x - from.x) / duration, y: (to.y - from.y) / duration }
-      if (fraction === 1) this.samples.shift()
-      this.anchor = { ...to, time: toTime }
-      return { from, to, velocity, radius: this.radius, pressure: sample.pressure, active: true }
-    }
-    return { ...idleStroke(), from: this.position, to: this.position, radius: this.radius, pressure: this.currentPressure }
-  }
+  next(): Stroke { return this.drain(1)[0] ?? { ...idleStroke(), from: this.position, to: this.position, radius: this.radius, pressure: this.currentPressure } }
 
   get cursor(): Stroke { return { ...idleStroke(), from: this.position, to: this.position, radius: this.radius } }
 }
