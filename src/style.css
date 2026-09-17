@@ -45,29 +45,6 @@ button:focus-visible, input:focus-visible, canvas:focus-visible { outline: 2px s
   letter-spacing: -2px;
   filter: drop-shadow(0 1px 0 #fff2d655);
 }
-.brand::before {
-  content: '';
-  position: absolute;
-  z-index: -1;
-  left: -7px;
-  right: -9px;
-  bottom: 0;
-  height: 12px;
-  border-radius: 58% 42% 55% 45% / 55% 62% 38% 45%;
-  background: #f4dfb269;
-  transform: rotate(-1.5deg);
-}
-.brand::after {
-  content: '';
-  position: absolute;
-  left: 14px;
-  right: 4px;
-  bottom: 3px;
-  height: 2px;
-  border-radius: 999px;
-  background: #594a3388;
-  transform: rotate(.7deg) scaleX(.94);
-}
 .brand span { display: inline-block; position: relative; }
 .brand span:nth-child(1) { transform: rotate(-8deg) translateY(1px); }
 .brand span:nth-child(2) { transform: rotate(4deg) translateY(-1px); }

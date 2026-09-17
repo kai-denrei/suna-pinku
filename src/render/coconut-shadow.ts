@@ -318,10 +318,11 @@ function createVertexData(mesh: ParsedMesh) {
 }
 
 function placement(screenToBed: (x: number, y: number) => Point2, width: number, height: number, mobile: boolean, aspect: number): ShadowPlacement {
-  const centerScreen = mobile ? { x: 0.83, y: 0.17 } : { x: 0.855, y: 0.185 }
+  const centerScreen = mobile ? { x: 0.98, y: 0.04 } : { x: 0.93, y: -0.04 }
+  const halfScreenWidth = mobile ? 0.88 : 0.36
   const center = screenToBed(width * centerScreen.x, height * centerScreen.y)
-  const left = screenToBed(width * (centerScreen.x - (mobile ? 0.27 : 0.22)), height * centerScreen.y)
-  const right = screenToBed(width * (centerScreen.x + (mobile ? 0.27 : 0.22)), height * centerScreen.y)
+  const left = screenToBed(width * (centerScreen.x - halfScreenWidth), height * centerScreen.y)
+  const right = screenToBed(width * (centerScreen.x + halfScreenWidth), height * centerScreen.y)
   const halfWidth = Math.abs(right.x - left.x) * 0.5
   const halfHeight = halfWidth / Math.max(aspect, 0.25)
   return { centerX: center.x, centerZ: center.y, halfWidth, halfHeight }
