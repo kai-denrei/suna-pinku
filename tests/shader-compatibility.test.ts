@@ -29,3 +29,11 @@ test('surface and loose-grain fragments provide the dedicated glint target', () 
   expect(surfaceShader).toMatch(/struct GrainFragmentOutput \{[^}]*@location\(1\) glint: f32/s)
 })
 
+test('mobile grain filtering preserves full visible material detail', () => {
+  const mobileFragment = surfaceShader.match(/@fragment fn fragmentMobile[\s\S]*?(?=struct GrainOutput)/)?.[0]
+  expect(mobileFragment).toBeDefined()
+  expect(mobileFragment).toContain('let appearanceDetail = 1.0;')
+  expect(mobileFragment).toContain('let depthDetail = 1.0 - smoothstep(0.48, 0.90, footprint);')
+  expect(mobileFragment).toContain('let stochasticAmount = smoothstep(0.32, 0.58, footprint);')
+  expect(mobileFragment).not.toContain('let detail = 1.0 - smoothstep(0.55, 2.1, footprint);')
+})

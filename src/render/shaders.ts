@@ -249,11 +249,17 @@ struct FragmentOutput { @location(0) color: vec4f, @location(1) glint: f32, @bui
   let grainColor = grain.color;
   let grainEdge = grain.edge;
   let roundness = grain.roundness;
-  let detail = 1.0 - smoothstep(0.55, 2.1, footprint);
-  let depthDetail = detail * (1.0 - smoothstep(0.48, 0.90, footprint));
+
+  // Mobile already breaks the coherent pixel/grain phase with the stochastic
+  // footprint sample above. Do not also fade the material detail with distance:
+  // that derivative-driven fade made the far/top half of portrait views visibly
+  // smoother than the near/bottom half. Keep the visible grain response at full
+  // strength and filter only sub-pixel fragment-depth relief.
+  let appearanceDetail = 1.0;
+  let depthDetail = 1.0 - smoothstep(0.48, 0.90, footprint);
   let grainHeight = depthDetail * grainEdge * roundness * mix(0.000045, 0.000115, grainColor.x);
   let facet = (grainColor - 0.5) * 0.52 + grainOffset * (0.38 + roundness * 0.42);
-  let normal = normalize(macroNormal + vec3f(facet.x, 0.0, facet.y) * detail);
+  let normal = normalize(macroNormal + vec3f(facet.x, 0.0, facet.y) * appearanceDetail);
   let displacedWorld = input.world + macroNormal * grainHeight;
   let light = normalize(view.light.xyz);
   let towardEye = normalize(view.eye.xyz - displacedWorld);
@@ -264,11 +270,11 @@ struct FragmentOutput { @location(0) color: vec4f, @location(1) glint: f32, @bui
   let shade = treeShadow(position);
   let visibility = illumination.x * shade;
   let occlusion = illumination.y;
-  let microOcclusion = mix(1.0, mix(0.68, 1.0, grainEdge), detail);
+  let microOcclusion = mix(1.0, mix(0.68, 1.0, grainEdge), appearanceDetail);
   let mineral = mix(vec3f(0.46, 0.315, 0.17), vec3f(0.72, 0.56, 0.33), grainColor.x);
   let darkGrain = mix(1.0, 0.3, smoothstep(0.94, 0.985, grainColor.y));
-  let albedo = mix(vec3f(0.59, 0.435, 0.25), mineral * darkGrain * mix(0.62, 1.0, grainEdge), detail);
-  let roughness = mix(0.80, 0.42, grainColor.y * detail);
+  let albedo = mix(vec3f(0.59, 0.435, 0.25), mineral * darkGrain * mix(0.62, 1.0, grainEdge), appearanceDetail);
+  let roughness = mix(0.80, 0.42, grainColor.y * appearanceDetail);
   let alphaSquared = pow(roughness, 4.0);
   let normalHalf = max(0.0, dot(normal, halfway));
   let distribution = microfacetDistribution(alphaSquared, normalHalf);
