@@ -101,9 +101,6 @@ fn treeShadow(position: vec2f) -> f32 {
   let mask = textureSampleLevel(shadowTexture, shadowSampler, uv, 0.0).x;
   return 1.0 - mask * shadowOpacity;
 }
-fn fresnelSchlickColor(f0: vec3f, cosine: f32) -> vec3f {
-  return f0 + (vec3f(1.0) - f0) * pow(1.0 - cosine, 5.0);
-}
 fn microfacetDistribution(alphaSquared: f32, normalHalf: f32) -> f32 {
   let denominator = normalHalf * normalHalf * (alphaSquared - 1.0) + 1.0;
   return alphaSquared / max(3.141593 * denominator * denominator, 0.0001);
@@ -111,35 +108,46 @@ fn microfacetDistribution(alphaSquared: f32, normalHalf: f32) -> f32 {
 fn geometryAttenuation(cosine: f32, viewCosine: f32) -> f32 {
   return cosine * viewCosine / max((cosine * 0.7 + 0.3) * (viewCosine * 0.7 + 0.3), 0.001);
 }
-fn reflectiveSpeckAt(position: vec2f, normal: vec3f, towardEye: vec3f, light: vec3f, shade: f32, detail: f32) -> vec3f {
+fn reflectiveGlintAt(position: vec2f, normal: vec3f, towardEye: vec3f, light: vec3f, visibility: f32, pixelWidth: f32) -> f32 {
   let cellSize = 0.0048;
   let cell = floor(position / cellSize);
   let selector = hash2(cell + vec2f(13.7, 41.3));
-  let selected = smoothstep(0.992, 0.9985, selector.x);
+  if (selector.x <= 0.962) { return 0.0; }
+
   let centerSeed = hash2(cell + vec2f(73.1, 19.6));
   let center = (cell + 0.12 + centerSeed * 0.76) * cellSize;
-  let pixelWidth = max(length(dpdx(position)), length(dpdy(position)));
-  let radius = mix(0.00013, 0.00024, centerSeed.y);
-  let coverage = selected * (1.0 - smoothstep(radius, radius + max(pixelWidth * 1.15, 0.00003), length(position - center)));
-  let orientation = hash2(cell + vec2f(101.9, 7.4)) - 0.5;
-  let microNormal = normalize(normal + vec3f(orientation.x, 0.0, orientation.y) * 0.58);
+  let physicalRadius = mix(0.00006, 0.00014, selector.y);
+
+  // The mineral chip is physically sub-pixel, but a solar flash is an optical
+  // impulse. Give the flash a minimum raster footprint so the reflected energy
+  // cannot vanish merely because the chip center falls between pixel samples.
+  let opticalRadius = max(physicalRadius, pixelWidth * 1.45);
+  let centerDistance = length(position - center);
+  if (centerDistance > opticalRadius) { return 0.0; }
+
   let halfway = normalize(light + towardEye);
-  let cosine = max(0.0, dot(microNormal, light));
-  let viewCosine = max(0.02, dot(microNormal, towardEye));
-  let normalHalf = max(0.0, dot(microNormal, halfway));
-  let roughness = mix(0.024, 0.06, selector.y);
-  let alphaSquared = pow(roughness, 4.0);
-  let distribution = microfacetDistribution(alphaSquared, normalHalf);
-  let geometry = geometryAttenuation(cosine, viewCosine);
-  let fresnel = fresnelSchlickColor(mix(vec3f(0.055, 0.054, 0.050), vec3f(0.095, 0.090, 0.082), centerSeed.x), max(0.0, dot(halfway, towardEye)));
-  let directSpecular = distribution * geometry / max(4.0 * cosine * viewCosine, 0.001);
-  let reflected = reflect(-towardEye, microNormal);
-  let sunlit = smoothstep(0.72, 0.94, shade);
-  let environmentSpecular = environment(reflected) * fresnel * pow(1.0 - roughness, 2.0) * 1.12 * mix(0.30, 1.0, sunlit);
-  let directColor = vec3f(1.0, 0.89, 0.69) * 3.2 * cosine * directSpecular * fresnel;
-  return coverage * mix(0.68, 1.0, detail) * sunlit * (directColor + environmentSpecular);
+  let normalHalf = max(dot(normal, halfway), 0.02);
+  let tangentHalf = length(cross(normal, halfway));
+  let requiredSlope = tangentHalf / normalHalf;
+
+  // Treat the unresolved crystal faces as a stochastic slope distribution.
+  // Evaluate the probability density at the exact facet slope required to
+  // reflect the real sun toward the fixed camera, then make one deterministic
+  // Bernoulli draw per world-locked mineral chip. This keeps flashes sparse and
+  // geometric without requiring a tiny explicit facet set to win an unlikely
+  // exact-alignment lottery.
+  let slopeSigma = 0.46;
+  let facetProbability = exp(-0.5 * requiredSlope * requiredSlope / (slopeSigma * slopeSigma));
+  let activationProbability = clamp(0.58 + facetProbability * 0.34, 0.0, 0.94);
+  let orientationSeed = hash2(cell + vec2f(151.7, 223.9));
+  if (orientationSeed.x > activationProbability) { return 0.0; }
+
+  let footprint = 1.0 - smoothstep(0.22, 1.0, centerDistance / opticalRadius);
+  let shadowed = smoothstep(0.06, 0.52, visibility);
+  let intensity = mix(1.6, 2.6, orientationSeed.y);
+  return footprint * shadowed * intensity;
 }
-struct FragmentOutput { @location(0) color: vec4f, @builtin(frag_depth) depth: f32 }
+struct FragmentOutput { @location(0) color: vec4f, @location(1) glint: f32, @builtin(frag_depth) depth: f32 }
 @fragment fn fragment(input: VertexOutput) -> FragmentOutput {
   let position = input.world.xz;
   let spacing = view.grid.y / view.grid.x;
@@ -150,6 +158,7 @@ struct FragmentOutput { @location(0) color: vec4f, @builtin(frag_depth) depth: f
   let macroNormal = normalize(vec3f(heightLeft - heightRight, 2.0 * spacing, heightBack - heightFront));
   let grainCoordinate = position / 0.00043;
   let footprint = max(length(dpdx(grainCoordinate)), length(dpdy(grainCoordinate)));
+  let reflectivePixelWidth = footprint * 0.00043;
   let detail = 1.0 - smoothstep(0.55, 2.1, footprint);
   let baseCell = floor(grainCoordinate);
   var nearest = 100.0;
@@ -199,14 +208,15 @@ struct FragmentOutput { @location(0) color: vec4f, @builtin(frag_depth) depth: f
   let direct = vec3f(1.0, 0.89, 0.69) * 2.55 * visibility * microOcclusion;
   let reflected = reflect(-towardEye, normal);
   let environmentSpecular = environment(reflected) * fresnel * pow(1.0 - roughness, 2.0) * 0.32 * occlusion * mix(0.42, 1.0, shade);
-  let reflectiveSpeck = reflectiveSpeckAt(position, normal, towardEye, light, shade, detail);
-  var radiance = albedo * (ambient + direct * diffuse) + direct * specular * cosine + environmentSpecular + reflectiveSpeck;
+  let reflectiveGlint = reflectiveGlintAt(position, macroNormal, towardEye, light, visibility, reflectivePixelWidth);
+  var radiance = albedo * (ambient + direct * diffuse) + direct * specular * cosine + environmentSpecular;
   let ringDistance = abs(length(position - view.pointer.xy) - view.pointer.z);
   let ring = (1.0 - smoothstep(0.0003, 0.0008, ringDistance)) * view.pointer.w;
   radiance *= 1.0 - 0.2 * ring;
   let projected = project(displacedWorld);
   var output: FragmentOutput;
   output.color = vec4f(radiance, 1.0);
+  output.glint = reflectiveGlint;
   output.depth = projected.z / projected.w;
   return output;
 }
@@ -222,6 +232,7 @@ struct FragmentOutput { @location(0) color: vec4f, @builtin(frag_depth) depth: f
   let grainDx = dpdx(grainCoordinate);
   let grainDy = dpdy(grainCoordinate);
   let footprint = max(length(grainDx), length(grainDy));
+  let reflectivePixelWidth = footprint * 0.00043;
 
   // The physical grain generator is a jittered Voronoi lattice. When its
   // projected spacing approaches the framebuffer sampling rate, sampling every
@@ -269,14 +280,15 @@ struct FragmentOutput { @location(0) color: vec4f, @builtin(frag_depth) depth: f
   let direct = vec3f(1.0, 0.89, 0.69) * 2.55 * visibility * microOcclusion;
   let reflected = reflect(-towardEye, normal);
   let environmentSpecular = environment(reflected) * fresnel * pow(1.0 - roughness, 2.0) * 0.32 * occlusion * mix(0.42, 1.0, shade);
-  let reflectiveSpeck = reflectiveSpeckAt(position, normal, towardEye, light, shade, detail);
-  var radiance = albedo * (ambient + direct * diffuse) + direct * specular * cosine + environmentSpecular + reflectiveSpeck;
+  let reflectiveGlint = reflectiveGlintAt(position, macroNormal, towardEye, light, visibility, reflectivePixelWidth);
+  var radiance = albedo * (ambient + direct * diffuse) + direct * specular * cosine + environmentSpecular;
   let ringDistance = abs(length(position - view.pointer.xy) - view.pointer.z);
   let ring = (1.0 - smoothstep(0.0003, 0.0008, ringDistance)) * view.pointer.w;
   radiance *= 1.0 - 0.2 * ring;
   let projected = project(displacedWorld);
   var output: FragmentOutput;
   output.color = vec4f(radiance, 1.0);
+  output.glint = reflectiveGlint;
   output.depth = projected.z / projected.w;
   return output;
 }
@@ -301,7 +313,7 @@ struct GrainOutput {
   output.radius = radius;
   return output;
 }
-struct GrainFragmentOutput { @location(0) color: vec4f, @builtin(frag_depth) depth: f32 }
+struct GrainFragmentOutput { @location(0) color: vec4f, @location(1) glint: f32, @builtin(frag_depth) depth: f32 }
 @fragment fn grainFragment(input: GrainOutput) -> GrainFragmentOutput {
   let squared = dot(input.local, input.local);
   if (squared > 1.0) { discard; }
@@ -322,6 +334,7 @@ struct GrainFragmentOutput { @location(0) color: vec4f, @builtin(frag_depth) dep
   let projected = project(surface);
   var output: GrainFragmentOutput;
   output.color = vec4f(radiance, 1.0);
+  output.glint = 0.0;
   output.depth = projected.z / projected.w;
   return output;
 }

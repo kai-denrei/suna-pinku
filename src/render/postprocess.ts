@@ -25,6 +25,7 @@ struct PostView { texel: vec4f }
 @group(0) @binding(0) var postSampler: sampler;
 @group(0) @binding(1) var sourceTexture: texture_2d<f32>;
 @group(0) @binding(2) var<uniform> postView: PostView;
+@group(0) @binding(3) var glintTexture: texture_2d<f32>;
 struct VertexOutput { @builtin(position) clip: vec4f, @location(0) uv: vec2f }
 @vertex fn vertex(@builtin(vertex_index) index: u32) -> VertexOutput {
   let positions = array<vec2f, 3>(vec2f(-1.0, -1.0), vec2f(3.0, -1.0), vec2f(-1.0, 3.0));
@@ -79,11 +80,70 @@ fn filmicGrade(color: vec3f, uv: vec2f) -> vec3f {
   }
   let bloomed = clamp(base + bloom * 2.15, vec3f(0.0), vec3f(1.0));
   let color = filmicGrade(bloomed, input.uv);
-  return vec4f(color, 1.0);
+
+  let glintCenter = textureSample(glintTexture, postSampler, input.uv).r;
+
+  let hx1p = textureSample(glintTexture, postSampler, input.uv + vec2f(texel.x, 0.0)).r;
+  let hx1m = textureSample(glintTexture, postSampler, input.uv - vec2f(texel.x, 0.0)).r;
+  let hy1p = textureSample(glintTexture, postSampler, input.uv + vec2f(0.0, texel.y)).r;
+  let hy1m = textureSample(glintTexture, postSampler, input.uv - vec2f(0.0, texel.y)).r;
+  let hx2p = textureSample(glintTexture, postSampler, input.uv + vec2f(texel.x * 2.0, 0.0)).r;
+  let hx2m = textureSample(glintTexture, postSampler, input.uv - vec2f(texel.x * 2.0, 0.0)).r;
+  let hy2p = textureSample(glintTexture, postSampler, input.uv + vec2f(0.0, texel.y * 2.0)).r;
+  let hy2m = textureSample(glintTexture, postSampler, input.uv - vec2f(0.0, texel.y * 2.0)).r;
+  let hx3p = textureSample(glintTexture, postSampler, input.uv + vec2f(texel.x * 3.0, 0.0)).r;
+  let hx3m = textureSample(glintTexture, postSampler, input.uv - vec2f(texel.x * 3.0, 0.0)).r;
+  let hy3p = textureSample(glintTexture, postSampler, input.uv + vec2f(0.0, texel.y * 3.0)).r;
+  let hy3m = textureSample(glintTexture, postSampler, input.uv - vec2f(0.0, texel.y * 3.0)).r;
+  let hx4p = textureSample(glintTexture, postSampler, input.uv + vec2f(texel.x * 4.5, 0.0)).r;
+  let hx4m = textureSample(glintTexture, postSampler, input.uv - vec2f(texel.x * 4.5, 0.0)).r;
+  let hy4p = textureSample(glintTexture, postSampler, input.uv + vec2f(0.0, texel.y * 4.5)).r;
+  let hy4m = textureSample(glintTexture, postSampler, input.uv - vec2f(0.0, texel.y * 4.5)).r;
+
+  let d11 = textureSample(glintTexture, postSampler, input.uv + texel).r;
+  let d12 = textureSample(glintTexture, postSampler, input.uv + vec2f(-texel.x, texel.y)).r;
+  let d13 = textureSample(glintTexture, postSampler, input.uv + vec2f(texel.x, -texel.y)).r;
+  let d14 = textureSample(glintTexture, postSampler, input.uv - texel).r;
+  let d21 = textureSample(glintTexture, postSampler, input.uv + texel * 2.0).r;
+  let d22 = textureSample(glintTexture, postSampler, input.uv + vec2f(-texel.x * 2.0, texel.y * 2.0)).r;
+  let d23 = textureSample(glintTexture, postSampler, input.uv + vec2f(texel.x * 2.0, -texel.y * 2.0)).r;
+  let d24 = textureSample(glintTexture, postSampler, input.uv - texel * 2.0).r;
+  let d31 = textureSample(glintTexture, postSampler, input.uv + texel * 3.0).r;
+  let d32 = textureSample(glintTexture, postSampler, input.uv + vec2f(-texel.x * 3.0, texel.y * 3.0)).r;
+  let d33 = textureSample(glintTexture, postSampler, input.uv + vec2f(texel.x * 3.0, -texel.y * 3.0)).r;
+  let d34 = textureSample(glintTexture, postSampler, input.uv - texel * 3.0).r;
+
+  let crossTight = (hx1p + hx1m + hy1p + hy1m) * 0.20
+    + (hx2p + hx2m + hy2p + hy2m) * 0.14
+    + (hx3p + hx3m + hy3p + hy3m) * 0.09;
+  let crossSoft = (hx1p + hx1m + hy1p + hy1m) * 0.18
+    + (hx2p + hx2m + hy2p + hy2m) * 0.17
+    + (hx3p + hx3m + hy3p + hy3m) * 0.13
+    + (hx4p + hx4m + hy4p + hy4m) * 0.08;
+  let diagonal = (d11 + d12 + d13 + d14) * 0.14
+    + (d21 + d22 + d23 + d24) * 0.11
+    + (d31 + d32 + d33 + d34) * 0.08;
+  let star = crossTight + diagonal * 0.55;
+  let smear = crossSoft * 0.56 + diagonal * 0.48;
+
+  // Shape the glint as a softer optical reflection: a hot center, short
+  // streak-like structure, and a broader smeared glow rather than a hard dot.
+  let coreMask = smoothstep(0.010, 0.038, glintCenter);
+  let streakMask = smoothstep(0.010, 0.080, star + glintCenter * 0.18);
+  let smearMask = smoothstep(0.008, 0.070, smear + glintCenter * 0.22);
+  let warmWhite = vec3f(1.0, 0.998, 0.988);
+  let solarTint = vec3f(1.0, 0.992, 0.95);
+  var composite = color + solarTint * smear * 0.16;
+  composite += warmWhite * star * 0.10;
+  composite = mix(composite, warmWhite, coreMask * 0.82);
+  composite += solarTint * streakMask * 0.07;
+  composite += vec3f(1.0, 0.99, 0.94) * smearMask * 0.06;
+  return vec4f(clamp(composite, vec3f(0.0), vec3f(1.0)), 1.0);
 }
 `
 
 export const HDR_SCENE_FORMAT: GPUTextureFormat = 'rgba16float'
+export const GLINT_FORMAT: GPUTextureFormat = 'r16float'
 
 export class SandPostProcess {
   private readonly uniform: GPUBuffer
@@ -96,6 +156,8 @@ export class SandPostProcess {
   private postGroup!: GPUBindGroup
   private hdrScene?: GPUTexture
   private hdrSceneView?: GPUTextureView
+  private glintScene?: GPUTexture
+  private glintSceneView?: GPUTextureView
   private legacyScene?: GPUTexture
   private legacySceneView?: GPUTextureView
   private width = 0
@@ -133,11 +195,14 @@ export class SandPostProcess {
   resize(width: number, height: number) {
     if (width === this.width && height === this.height) return
     this.hdrScene?.destroy()
+    this.glintScene?.destroy()
     this.legacyScene?.destroy()
     this.width = width
     this.height = height
     this.hdrScene = this.device.createTexture({ label: 'Linear HDR scene color', size: [width, height], format: HDR_SCENE_FORMAT, usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING })
     this.hdrSceneView = this.hdrScene.createView()
+    this.glintScene = this.device.createTexture({ label: 'Reflective mineral HDR glints', size: [width, height], format: GLINT_FORMAT, usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING })
+    this.glintSceneView = this.glintScene.createView()
     this.legacyScene = this.device.createTexture({ label: 'Legacy display scene color', size: [width, height], format: this.legacyFormat, usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING })
     this.legacySceneView = this.legacyScene.createView()
     this.legacyEncodeGroup = this.device.createBindGroup({ layout: this.legacyEncodePipeline.getBindGroupLayout(0), entries: [
@@ -147,6 +212,7 @@ export class SandPostProcess {
       { binding: 0, resource: this.sampler },
       { binding: 1, resource: this.legacySceneView },
       { binding: 2, resource: { buffer: this.uniform } },
+      { binding: 3, resource: this.glintSceneView },
     ] })
     this.device.queue.writeBuffer(this.uniform, 0, new Float32Array([1 / width, 1 / height, 0, 0]))
   }
@@ -154,6 +220,11 @@ export class SandPostProcess {
   get target() {
     if (!this.hdrSceneView) throw new Error('Post process textures are not initialized.')
     return this.hdrSceneView
+  }
+
+  get glintTarget() {
+    if (!this.glintSceneView) throw new Error('Post process textures are not initialized.')
+    return this.glintSceneView
   }
 
   encode(encoder: GPUCommandEncoder, target: GPUTextureView) {
@@ -171,5 +242,5 @@ export class SandPostProcess {
     postPass.end()
   }
 
-  dispose() { this.hdrScene?.destroy(); this.legacyScene?.destroy(); this.uniform.destroy() }
+  dispose() { this.hdrScene?.destroy(); this.glintScene?.destroy(); this.legacyScene?.destroy(); this.uniform.destroy() }
 }
