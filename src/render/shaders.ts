@@ -1,3 +1,5 @@
+import { SAND } from '../config'
+
 export const surfaceShader = `
 struct View {
   eye: vec4f,
@@ -17,6 +19,8 @@ struct Grain { position: vec4f, velocity: vec4f }
 @group(0) @binding(3) var<storage, read> lighting: array<vec4f>;
 @group(0) @binding(4) var shadowSampler: sampler;
 @group(0) @binding(5) var shadowTexture: texture_2d<f32>;
+@group(0) @binding(6) var airborneShadowSampler: sampler;
+@group(0) @binding(7) var airborneShadowTexture: texture_2d<f32>;
 fn lightAt(cell: vec2i) -> vec2f {
   let bounded = vec2u(clamp(cell, vec2i(0), vec2i(i32(view.grid.x) - 1)));
   return lighting[bounded.y * u32(view.grid.x) + bounded.x].xy;
@@ -100,6 +104,12 @@ fn treeShadow(position: vec2f) -> f32 {
   if (any(uv < vec2f(0.0)) || any(uv > vec2f(1.0))) { return 1.0; }
   let mask = textureSampleLevel(shadowTexture, shadowSampler, uv, 0.0).x;
   return 1.0 - mask * shadowOpacity;
+}
+fn airborneShadow(position: vec2f) -> f32 {
+  let uv = vec2f(position.x / view.grid.y + 0.5, 0.5 - position.y / view.grid.y);
+  if (any(uv < vec2f(0.0)) || any(uv > vec2f(1.0))) { return 1.0; }
+  let opticalDepth = textureSampleLevel(airborneShadowTexture, airborneShadowSampler, uv, 0.0).x;
+  return exp(-opticalDepth * ${SAND.airborneShadowStrength});
 }
 fn microfacetDistribution(alphaSquared: f32, normalHalf: f32) -> f32 {
   let denominator = normalHalf * normalHalf * (alphaSquared - 1.0) + 1.0;
@@ -190,7 +200,8 @@ struct FragmentOutput { @location(0) color: vec4f, @location(1) glint: f32, @bui
   let viewCosine = max(0.02, dot(normal, towardEye));
   let illumination = illuminationAt(position);
   let shade = treeShadow(position);
-  let visibility = illumination.x * shade;
+  let sprayShade = airborneShadow(position);
+  let visibility = illumination.x * shade * sprayShade;
   let occlusion = illumination.y;
   let microOcclusion = mix(1.0, mix(0.68, 1.0, grainEdge), detail);
   let mineral = mix(vec3f(0.46, 0.315, 0.17), vec3f(0.72, 0.56, 0.33), grainColor.x);
@@ -268,7 +279,8 @@ struct FragmentOutput { @location(0) color: vec4f, @location(1) glint: f32, @bui
   let viewCosine = max(0.02, dot(normal, towardEye));
   let illumination = illuminationAt(position);
   let shade = treeShadow(position);
-  let visibility = illumination.x * shade;
+  let sprayShade = airborneShadow(position);
+  let visibility = illumination.x * shade * sprayShade;
   let occlusion = illumination.y;
   let microOcclusion = mix(1.0, mix(0.68, 1.0, grainEdge), appearanceDetail);
   let mineral = mix(vec3f(0.46, 0.315, 0.17), vec3f(0.72, 0.56, 0.33), grainColor.x);
@@ -304,28 +316,53 @@ struct GrainOutput {
   @location(1) tint: f32,
   @location(2) center: vec3f,
   @location(3) radius: f32,
+  @location(4) physicalRadius: f32,
+  @location(5) trailRatio: f32,
+  @location(6) axis: vec2f,
 }
 @vertex fn grainVertex(@builtin(vertex_index) vertex: u32, @builtin(instance_index) instance: u32) -> GrainOutput {
   let corners = array<vec2f, 6>(vec2f(-1.0, -1.0), vec2f(1.0, -1.0), vec2f(-1.0, 1.0), vec2f(-1.0, 1.0), vec2f(1.0, -1.0), vec2f(1.0, 1.0));
   let grain = grains[instance];
   let corner = corners[vertex];
-  let radius = select(0.0, 0.00016 * pow(grain.position.w / 0.000004, 1.0 / 3.0), grain.position.w > 0.0);
-  let position = grain.position.xyz + (view.right.xyz * corner.x + view.up.xyz * corner.y) * radius;
+  let enabled = grain.position.w > 0.0;
+  let physicalRadius = select(0.0, ${SAND.airborneGrainRadius} * pow(max(grain.position.w, 1e-9) / ${SAND.airborneReferenceMass}, 1.0 / 3.0), enabled);
+  let relative = grain.position.xyz - view.eye.xyz;
+  let cameraDepth = max(dot(relative, view.forward.xyz), 0.01);
+  let worldPerPixel = 2.0 * view.eye.w * cameraDepth / max(view.grid.w, 1.0);
+  let renderRadius = max(physicalRadius, worldPerPixel * 0.72);
+  let cameraVelocity = vec2f(dot(grain.velocity.xyz, view.right.xyz), dot(grain.velocity.xyz, view.up.xyz));
+  let projectedSpeed = length(cameraVelocity);
+  let axis = select(vec2f(1.0, 0.0), cameraVelocity / max(projectedSpeed, 1e-8), projectedSpeed > 1e-5);
+  let side = vec2f(-axis.y, axis.x);
+  let shutter = 0.0035;
+  let halfTrail = min(projectedSpeed * shutter * 0.5, worldPerPixel * 3.0);
+  let blurCenter = grain.position.xyz - (view.right.xyz * cameraVelocity.x + view.up.xyz * cameraVelocity.y) * shutter * 0.5;
+  let extent = renderRadius + halfTrail;
+  let cameraOffset = axis * (corner.x * extent) + side * (corner.y * renderRadius);
+  let position = blurCenter + view.right.xyz * cameraOffset.x + view.up.xyz * cameraOffset.y;
   var output: GrainOutput;
-  output.clip = select(vec4f(2.0, 2.0, 2.0, 1.0), project(position), grain.position.w > 0.0);
-  output.local = corner;
+  output.clip = select(vec4f(2.0, 2.0, 2.0, 1.0), project(position), enabled);
+  output.local = vec2f(corner.x * extent / max(renderRadius, 1e-9), corner.y);
   output.tint = hash2(vec2f(f32(instance), 17.0)).x;
-  output.center = grain.position.xyz;
-  output.radius = radius;
+  output.center = blurCenter;
+  output.radius = renderRadius;
+  output.physicalRadius = physicalRadius;
+  output.trailRatio = halfTrail / max(renderRadius, 1e-9);
+  output.axis = axis;
   return output;
 }
 struct GrainFragmentOutput { @location(0) color: vec4f, @location(1) glint: f32, @builtin(frag_depth) depth: f32 }
 @fragment fn grainFragment(input: GrainOutput) -> GrainFragmentOutput {
-  let squared = dot(input.local, input.local);
+  let excess = max(abs(input.local.x) - input.trailRatio, 0.0);
+  let local = vec2f(sign(input.local.x) * excess, input.local.y);
+  let squared = dot(local, local);
   if (squared > 1.0) { discard; }
-  let sphereDepth = sqrt(1.0 - squared);
-  let normal = normalize(view.right.xyz * input.local.x + view.up.xyz * input.local.y - view.forward.xyz * sphereDepth);
-  let surface = input.center + (view.right.xyz * input.local.x + view.up.xyz * input.local.y - view.forward.xyz * sphereDepth) * input.radius;
+  let sphereDepth = sqrt(max(0.0, 1.0 - squared));
+  let axisWorld = view.right.xyz * input.axis.x + view.up.xyz * input.axis.y;
+  let sideWorld = view.right.xyz * -input.axis.y + view.up.xyz * input.axis.x;
+  let nearest = input.center + axisWorld * (clamp(input.local.x, -input.trailRatio, input.trailRatio) * input.radius);
+  let normal = normalize(axisWorld * local.x + sideWorld * local.y - view.forward.xyz * sphereDepth);
+  let surface = nearest + normal * input.radius;
   let light = normalize(view.light.xyz);
   let towardEye = normalize(view.eye.xyz - surface);
   let halfway = normalize(light + towardEye);
@@ -337,10 +374,15 @@ struct GrainFragmentOutput { @location(0) color: vec4f, @location(1) glint: f32,
   let ambient = environment(normal) * 0.34;
   let direct = vec3f(1.0, 0.89, 0.69) * 2.55 * diffuse * shade;
   let radiance = albedo * (ambient + direct) + environment(reflect(-towardEye, normal)) * sparkle * 0.55 * smoothstep(0.72, 0.94, shade);
+  let physicalArea = 3.141593 * input.physicalRadius * input.physicalRadius;
+  let capsuleArea = 3.141593 * input.radius * input.radius + 4.0 * input.radius * (input.trailRatio * input.radius);
+  let areaCoverage = clamp(physicalArea / max(capsuleArea, 1e-12), 0.0, 1.0);
+  let profile = 1.0 - smoothstep(0.34, 1.0, squared);
+  let alpha = min(0.94, areaCoverage * profile * 2.15);
   let projected = project(surface);
   var output: GrainFragmentOutput;
-  output.color = vec4f(radiance, 1.0);
-  output.glint = 0.0;
+  output.color = vec4f(radiance * alpha, alpha);
+  output.glint = sparkle * alpha * 0.18;
   output.depth = projected.z / projected.w;
   return output;
 }

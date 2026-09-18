@@ -3,7 +3,10 @@ export const SAND = {
   repose: 0.625, dynamicRepose: 0.48, rate: 32,
   step: 1 / 120, maxSteps: 4, radius: 0.012, indentation: 0.02,
   impactSpeedStart: 0.5, impactSpeedFull: 1.2, impactIndentation: 0.01,
-  impactEvacuation: 0.86, impactEjectionFraction: 0.015,
+  impactEvacuation: 0.86, impactEjectionFraction: 0.075,
+  impactParticleMassMin: 0.0000012, impactParticleMassMax: 0.0000032,
+  airborneGrainRadius: 0.00016, airborneReferenceMass: 0.000004,
+  airborneShadowResolution: 512, airborneShadowStrength: 1.7,
   particles: 16384, maxContacts: 8,
 } as const
 

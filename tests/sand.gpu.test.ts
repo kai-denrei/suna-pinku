@@ -2,6 +2,7 @@ import { afterAll, beforeAll, expect, test } from 'vitest'
 import { create, globals } from 'webgpu'
 import { SAND, idleStroke, type Stroke } from '../src/config'
 import { SandSolver } from '../src/simulation/solver'
+import { AirborneShadow } from '../src/render/airborne-shadow'
 import { SandRenderer } from '../src/render/renderer'
 import { BedLighting } from '../src/render/lighting'
 
@@ -190,6 +191,43 @@ test('a fast settled-bed impact immediately cuts deeper and ejects from the adva
   } finally { slow.dispose(); fast.dispose() }
 })
 
+test('fast impact builds a sustained centimeter-scale ballistic spray before redepositing', async () => {
+  const solver = new SandSolver(device, 128)
+  await solver.initialize()
+  try {
+    const initial = await readState(solver)
+    const stroke: Stroke = {
+      from: { x: -0.055, y: 0 }, to: { x: 0.055, y: 0 }, velocity: { x: 1.1, y: 0 },
+      radius: 0.014, pressure: 0.82, active: true,
+    }
+    step(solver, stroke, 6)
+    const state = await readState(solver)
+    const grains = await readParticles(solver)
+    let count = 0
+    let elevated = 0
+    let airborne = 0
+    let maximumHeight = -Infinity
+    let forwardMomentum = 0
+    for (let index = 0; index < grains.length; index += 8) {
+      const mass = grains[index + 3]
+      if (mass <= 0) continue
+      count++
+      airborne += mass
+      maximumHeight = Math.max(maximumHeight, grains[index + 1])
+      if (grains[index + 1] > SAND.depth + 0.004) elevated++
+      forwardMomentum += grains[index + 4]
+    }
+    expect(count).toBeGreaterThan(100)
+    expect(elevated).toBeGreaterThan(count * 0.08)
+    expect(maximumHeight).toBeGreaterThan(SAND.depth + 0.008)
+    expect(forwardMomentum).toBeGreaterThan(0)
+    expect(Math.abs((volume(state) + airborne) / volume(initial) - 1)).toBeLessThan(0.000004)
+    step(solver, idleStroke(), 180)
+    expect(await particleMass(solver)).toBeLessThan(airborne * 0.02)
+    expect(errors).toEqual([])
+  } finally { solver.dispose() }
+})
+
 test('gesture speed changes bed momentum and airborne mass while conserving sand', async () => {
   const slow = new SandSolver(device, 128)
   const fast = new SandSolver(device, 128)
@@ -289,6 +327,38 @@ test('horizon lighting leaves planes open, occludes trenches, and refreshes afte
     expect(reset[center + 1]).toBeGreaterThan(0.99)
     expect(errors).toEqual([])
   } finally { lighting.dispose(); uniform.destroy(); staging.destroy(); solver.dispose() }
+})
+
+test('airborne grains build a nonzero collective optical-depth shadow', async () => {
+  const solver = new SandSolver(device, 32)
+  await solver.initialize()
+  const shadow = new AirborneShadow(device, solver)
+  const resolution = SAND.airborneShadowResolution
+  const bytesPerRow = resolution * 4
+  const staging = device.createBuffer({ size: bytesPerRow * resolution, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST })
+  try {
+    await shadow.initialize()
+    const particles = new Float32Array(64 * 8)
+    for (let index = 0; index < 64; index++) {
+      const offset = index * 8
+      particles[offset] = (index % 8 - 3.5) * 0.001
+      particles[offset + 1] = SAND.depth + 0.028
+      particles[offset + 2] = (Math.floor(index / 8) - 3.5) * 0.001
+      particles[offset + 3] = SAND.airborneReferenceMass
+    }
+    device.queue.writeBuffer(solver.particles, 0, particles)
+    const encoder = device.createCommandEncoder()
+    shadow.encode(encoder, [1, 0.65, 0])
+    encoder.copyTextureToBuffer({ texture: shadow.texture }, { buffer: staging, bytesPerRow }, [resolution, resolution])
+    device.queue.submit([encoder.finish()])
+    await staging.mapAsync(GPUMapMode.READ)
+    const pixels = new Uint8Array(staging.getMappedRange())
+    let maximum = 0
+    for (let index = 0; index < pixels.length; index += 4) maximum = Math.max(maximum, pixels[index])
+    staging.unmap()
+    expect(maximum).toBeGreaterThan(10)
+    expect(errors).toEqual([])
+  } finally { shadow.dispose(); solver.dispose(); staging.destroy() }
 })
 
 test('surface pipeline compiles and renders nonuniform opaque pixels offscreen', async () => {

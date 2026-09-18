@@ -233,12 +233,16 @@ fn address(position: vec2f) -> u32 {
 fn impactResponse(speed: f32) -> f32 {
   return smoothstep(${SAND.impactSpeedStart}, ${SAND.impactSpeedFull}, speed);
 }
-fn claimImpactMass(cell: u32, mass: f32) -> bool {
-  let units = max(1, i32(round(mass * 1e9)));
-  let previous = atomicSub(&impactBudget[cell], units);
-  if (previous >= units) { return true; }
-  atomicAdd(&impactBudget[cell], units);
-  return false;
+fn claimImpactMass(cell: u32, requestedMass: f32) -> f32 {
+  let requestedUnits = max(1, i32(round(requestedMass * 1e9)));
+  let previous = atomicSub(&impactBudget[cell], requestedUnits);
+  if (previous <= 0) {
+    atomicAdd(&impactBudget[cell], requestedUnits);
+    return 0.0;
+  }
+  let claimed = min(previous, requestedUnits);
+  if (claimed < requestedUnits) { atomicAdd(&impactBudget[cell], requestedUnits - claimed); }
+  return f32(claimed) * 1e-9;
 }
 fn cellCenter(cell: u32) -> vec2f {
   return (vec2f(f32(cell % u32(params.grid.x)), f32(cell / u32(params.grid.x))) + 0.5) * params.grid.y - params.grid.z * 0.5;
@@ -268,9 +272,19 @@ fn animate(@builtin(global_invocation_id) invocation: vec3u) {
   if (index >= arrayLength(&grains)) { return; }
   var grain = grains[index];
   if (grain.position.w > 0.0) {
+    let impactGrain = grain.velocity.w < 0.0;
+    var age = abs(grain.velocity.w);
+    if (impactGrain) {
+      let radiusScale = pow(max(grain.position.w, 1e-9) / ${SAND.airborneReferenceMass}, 1.0 / 3.0);
+      let dragCoefficient = 2.35 / max(radiusScale, 0.55);
+      let speed = length(grain.velocity.xyz);
+      let drag = max(0.0, 1.0 - dragCoefficient * speed * params.grid.w);
+      grain.velocity = vec4f(grain.velocity.xyz * drag, grain.velocity.w);
+    }
     grain.velocity.y -= 9.81 * params.grid.w;
     grain.position = vec4f(grain.position.xyz + grain.velocity.xyz * params.grid.w, grain.position.w);
-    grain.velocity.w += params.grid.w;
+    age += params.grid.w;
+    grain.velocity.w = select(age, -age, impactGrain);
     let limit = params.grid.z * 0.5 - params.grid.y;
     grain.position.x = clamp(grain.position.x, -limit, limit);
     grain.position.z = clamp(grain.position.z, -limit, limit);
@@ -279,7 +293,7 @@ fn animate(@builtin(global_invocation_id) invocation: vec3u) {
     if (grain.position.y <= surface.x + 0.00014) {
       let normal = normalize(vec3f(-surface.y, 1.0, -surface.z));
       let normalSpeed = dot(grain.velocity.xyz, normal);
-      if (normalSpeed < -0.08 && grain.velocity.w < 0.22) {
+      if (normalSpeed < -0.08 && age < 0.22) {
         grain.position.y = surface.x + 0.00018;
         let tangent = grain.velocity.xyz - normal * normalSpeed;
         let friction = max(0.0, 1.0 - params.physics.w * 1.22 * abs(normalSpeed) / max(length(tangent), 1e-7));
@@ -315,8 +329,10 @@ fn animate(@builtin(global_invocation_id) invocation: vec3u) {
         let localContact = contactField[cell];
         let localSpeed = length(localContact.zw);
         let localImpact = impactResponse(localSpeed) * contactPressure[cell] * pow(localContact.x, 1.75);
-        let mass = mix(0.0000025, 0.0000055, random(seed + 13u));
-        if (localImpact > 0.0 && claimImpactMass(cell, mass)) {
+        let requestedMass = mix(${SAND.impactParticleMassMin}, ${SAND.impactParticleMassMax}, random(seed + 13u));
+        var mass = 0.0;
+        if (localImpact > 0.0) { mass = claimImpactMass(cell, requestedMass); }
+        if (mass > 0.0) {
           let surfacePosition = cellCenter(cell);
           let surface = contactAt(surfacePosition);
           let motionDirection = localContact.zw / max(localSpeed, 1e-8);
@@ -324,15 +340,15 @@ fn animate(@builtin(global_invocation_id) invocation: vec3u) {
           let transportDirection = transport / max(length(transport), 1e-9);
           let launchDirection = normalize(motionDirection + transportDirection * 0.28);
           let launchSide = vec2f(-launchDirection.y, launchDirection.x);
-          let spread = (random(seed + 31u) - 0.5) * localSpeed * 0.16;
-          let horizontalSpeed = localSpeed * (0.28 + random(seed + 5u) * 0.28);
+          let spread = (random(seed + 31u) - 0.5) * localSpeed * 0.26;
+          let horizontalSpeed = localSpeed * (0.42 + random(seed + 5u) * 0.38);
           let horizontal = launchDirection * horizontalSpeed + launchSide * spread;
           let uphill = max(0.0, dot(surface.yz, motionDirection));
-          let loft = pow(random(seed + 7u), 2.4);
-          let rareBurst = pow(random(seed + 41u), 8.0);
-          let lift = 0.055 + localSpeed * (0.06 + loft * 0.18 + rareBurst * 0.18 + min(uphill, 0.8) * 0.12);
+          let loft = pow(random(seed + 7u), 2.0);
+          let rareBurst = pow(random(seed + 41u), 9.0);
+          let lift = 0.12 + localSpeed * (0.16 + loft * 0.45 + rareBurst * 0.62 + min(uphill, 0.8) * 0.30);
           grain.position = vec4f(surfacePosition.x, surface.x + 0.0003, surfacePosition.y, mass);
-          grain.velocity = vec4f(horizontal.x, lift, horizontal.y, 0.0);
+          grain.velocity = vec4f(horizontal.x, lift, horizontal.y, -1e-6);
           atomicSub(&exchange[cell], i32(round(mass * 1e9)));
           launched = true;
         }
