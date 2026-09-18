@@ -1,4 +1,5 @@
 import { SAND } from '../config'
+import { WAVE_RESET } from '../reset/effect'
 import { waveShoreWgsl } from '../reset/wgsl'
 
 export const WATER_FIELD_RESOLUTION = SAND.resolution
@@ -408,14 +409,24 @@ fn refractedBedWorld(surface: SurfaceHit, incident: vec3f, eta: f32) -> vec3f {
   let distance = (${SAND.depth} - surface.position.y) / min(transmitted.y, -0.0001);
   return surface.position + transmitted * max(distance, 0.0);
 }
+fn edgeSafeRefractionUv(sampleUv: vec2f, dimensions: vec2f) -> vec2f {
+  let halfTexel = vec2f(0.5) / dimensions;
+  let span = max(vec2f(1.0) - halfTexel * 2.0, vec2f(1e-6));
+  let normalized = (sampleUv - halfTexel) / span;
+  // Mirror the finite scene color at the framebuffer boundary. This preserves
+  // refractive motion all the way to the screen edge without ever collapsing
+  // an out-of-range footprint onto one clamped row/column.
+  let mirrored = vec2f(1.0) - abs(fract(normalized * 0.5) * 2.0 - vec2f(1.0));
+  return halfTexel + mirrored * span;
+}
 @fragment fn fragment(input: VertexOutput) -> @location(0) vec4f {
   let source = textureSampleLevel(sourceTexture, postSampler, input.uv, 0.0);
   let bed = intersectBed(input.uv);
-  if (bed.w < 0.5 || abs(bed.x) > overlay.waveFront.w || abs(bed.y) > overlay.waveFront.w) { return source; }
+  if (bed.w < 0.5) { return source; }
 
   let shoreline = shorelineFront(bed.x, overlay.waveFront.y, overlay.waveFront.z);
   let waterDistance = bed.y - shoreline;
-  let waterMask = smoothstep(-overlay.waveShape.x * 0.06, overlay.waveShape.x, waterDistance);
+  let waterMask = smoothstep(-overlay.waveShape.x * ${WAVE_RESET.waterMaskBackstep}, overlay.waveShape.x, waterDistance);
   if (waterMask <= 0.0001) { return source; }
 
   let incident = viewRay(input.uv);
@@ -431,13 +442,15 @@ fn refractedBedWorld(surface: SurfaceHit, incident: vec3f, eta: f32) -> vec3f {
   let bedRed = refractedBedWorld(surface, incident, 1.0 / 1.3310);
   let bedGreen = refractedBedWorld(surface, incident, 1.0 / 1.3330);
   let bedBlue = refractedBedWorld(surface, incident, 1.0 / 1.3370);
-  let uvRed = clamp(projectWorld(bedRed), vec2f(0.001), vec2f(0.999));
-  let uvGreen = clamp(projectWorld(bedGreen), vec2f(0.001), vec2f(0.999));
-  let uvBlue = clamp(projectWorld(bedBlue), vec2f(0.001), vec2f(0.999));
-  let redSample = textureSampleLevel(sourceTexture, postSampler, uvRed, 0.0).rgb;
-  let greenSample = textureSampleLevel(sourceTexture, postSampler, uvGreen, 0.0).rgb;
-  let blueSample = textureSampleLevel(sourceTexture, postSampler, uvBlue, 0.0).rgb;
-  var refractedBed = toLinear(vec3f(redSample.r, greenSample.g, blueSample.b));
+  let projectedRed = projectWorld(bedRed);
+  let projectedGreen = projectWorld(bedGreen);
+  let projectedBlue = projectWorld(bedBlue);
+  let sourceDimensions = max(vec2f(textureDimensions(sourceTexture, 0)), vec2f(1.0));
+  let redSample = textureSampleLevel(sourceTexture, postSampler, edgeSafeRefractionUv(projectedRed, sourceDimensions), 0.0).rgb;
+  let greenSample = textureSampleLevel(sourceTexture, postSampler, edgeSafeRefractionUv(projectedGreen, sourceDimensions), 0.0).rgb;
+  let blueSample = textureSampleLevel(sourceTexture, postSampler, edgeSafeRefractionUv(projectedBlue, sourceDimensions), 0.0).rgb;
+  let refractedSrgb = vec3f(redSample.r, greenSample.g, blueSample.b);
+  var refractedBed = toLinear(refractedSrgb);
 
   let transmittedRay = refract(incident, surface.normal, 1.0 / 1.333);
   let pathLength = max((surface.position.y - ${SAND.depth}) / max(abs(transmittedRay.y), 0.06), 0.0);

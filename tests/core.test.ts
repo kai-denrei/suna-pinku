@@ -1,11 +1,12 @@
 import { describe, expect, test } from 'vitest'
-import { shouldUseMobileGrainFiltering } from '../src/platform/mobile'
+import { shouldUseMobileGrainFiltering, shouldUseSingleFrameResetPacing } from '../src/platform/mobile'
 import { drawingBuffer } from '../src/platform/viewport'
 import { FixedClock } from '../src/simulation/clock'
 import { SandCamera } from '../src/render/camera'
-import { StrokeQueue } from '../src/input/strokes'
+import { maxQueuedSegmentsPerPointer, StrokeQueue } from '../src/input/strokes'
 import { SAND } from '../src/config'
-import { WaveResetEffect, crestFront, eraseOriginFront, renderEntryFront, renderExitFront } from '../src/reset/effect'
+import { WaveResetEffect, crestFront, dryWaterMaskDistance, eraseOriginFront, renderEntryFront, renderExitFrontAt, shorelineOffsetAt } from '../src/reset/effect'
+import { waveResetViewport } from '../src/reset/viewport'
 
 describe('Drawing buffer policy', () => {
   test.each([[3840, 2160, 2], [7680, 4320, 2], [1440, 900, 2], [390, 844, 3]])('caps %s × %s at four million pixels', (width, height, dpr) => {
@@ -32,6 +33,17 @@ describe('Mobile grain filtering selection', () => {
   })
 })
 
+describe('Reset frame pacing selection', () => {
+  test('uses one reset frame in flight on iPhone and iPad WebKit environments', () => {
+    expect(shouldUseSingleFrameResetPacing({ maxTouchPoints: 5, coarsePointer: true, userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 27_0 like Mac OS X) Mobile', width: 430, height: 932 })).toBe(true)
+    expect(shouldUseSingleFrameResetPacing({ maxTouchPoints: 5, coarsePointer: true, userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X) Safari', width: 1024, height: 1366 })).toBe(true)
+  })
+  test('does not change desktop or Android reset pacing', () => {
+    expect(shouldUseSingleFrameResetPacing({ maxTouchPoints: 0, coarsePointer: false, userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X)', width: 1440, height: 900 })).toBe(false)
+    expect(shouldUseSingleFrameResetPacing({ maxTouchPoints: 5, coarsePointer: true, userAgent: 'Mozilla/5.0 (Linux; Android 16; Pixel) Mobile', width: 412, height: 915 })).toBe(false)
+  })
+})
+
 describe('Fixed simulation time', () => {
   test.each([30, 60, 120, 144])('executes 120 steps per second at %s Hz', (hz) => {
     const clock = new FixedClock(SAND.step, SAND.maxSteps)
@@ -46,6 +58,12 @@ describe('Fixed simulation time', () => {
     expect(clock.droppedSeconds).toBeGreaterThan(9)
     clock.reset()
     expect(clock.advance(20000)).toBe(0)
+  })
+  test('can restart from an explicit handoff timestamp', () => {
+    const clock = new FixedClock(SAND.step, SAND.maxSteps)
+    clock.reset(1000)
+    expect(clock.advance(1000)).toBe(0)
+    expect(clock.advance(1000 + 1000 / 30)).toBe(4)
   })
 })
 
@@ -62,6 +80,30 @@ describe('Finger sampling', () => {
     }
     expect(length).toBeCloseTo(0.1)
     expect(queue.next().active).toBe(false)
+  })
+  test('bounds pathological pointer backlog instead of replaying stale strokes indefinitely', () => {
+    const queue = new StrokeQueue()
+    queue.begin({ x: -0.3, y: 0 }, 0.75, 1000)
+    for (let index = 1; index <= 80; index++) {
+      const x = index % 2 === 0 ? -0.3 : 0.3
+      queue.move({ x, y: 0 }, 0.75, 1000 + index * 8)
+    }
+    queue.end()
+    let pending = 0
+    for (;;) {
+      const batch = queue.nextBatch()
+      if (!batch.length) break
+      pending += batch.length
+    }
+    expect(pending).toBeLessThanOrEqual(maxQueuedSegmentsPerPointer)
+  })
+  test('does not turn duplicate WebKit sample timestamps into extreme impact speed', () => {
+    const queue = new StrokeQueue()
+    queue.begin({ x: 0, y: 0 }, 0.75, 1000)
+    queue.move({ x: 0.1, y: 0 }, 0.75, 1000)
+    const stroke = queue.next()
+    expect(stroke.active).toBe(true)
+    expect(Math.hypot(stroke.velocity.x, stroke.velocity.y)).toBeLessThan(2)
   })
   test('preserves real gesture speed through spatial subdivision', () => {
     const velocityFor = (durationMs: number) => {
@@ -164,12 +206,56 @@ describe('Wave reset timing', () => {
     expect(state.eraseCurrentBaseFront).toBe(crestFront)
   })
 
-  test('keeps water visible immediately but exits beyond the near edge at the audio end', () => {
+  test('keeps water visible until the audio endpoint and exits exactly at that endpoint', () => {
     const wave = new WaveResetEffect()
-    wave.start(1000, 4)
-    expect(wave.update(1000).currentBaseFront).toBe(renderEntryFront)
-    const finished = wave.update(5000)
+    const duration = 4
+    const startedAt = 1000
+    const halfExtent = SAND.extent * 0.5
+    const maximumEdgeWaterDistance = (state: ReturnType<WaveResetEffect['update']>) => {
+      let maximum = Number.NEGATIVE_INFINITY
+      for (let index = 0; index <= 1024; index++) {
+        const x = -halfExtent + SAND.extent * index / 1024
+        maximum = Math.max(maximum, halfExtent - state.currentBaseFront - shorelineOffsetAt(x, state.time))
+      }
+      return maximum
+    }
+
+    wave.start(startedAt, duration)
+    expect(wave.update(startedAt).currentBaseFront).toBe(renderEntryFront)
+
+    const justBeforeEnd = wave.update(startedAt + duration * 1000 - 1)
+    expect(justBeforeEnd.active).toBe(true)
+    expect(maximumEdgeWaterDistance(justBeforeEnd)).toBeGreaterThan(dryWaterMaskDistance)
+
+    const finished = wave.update(startedAt + duration * 1000)
     expect(finished.justFinished).toBe(true)
-    expect(finished.currentBaseFront).toBe(renderExitFront)
+    expect(finished.currentBaseFront).toBeCloseTo(renderExitFrontAt(duration), 10)
+    expect(maximumEdgeWaterDistance(finished)).toBeLessThanOrEqual(dryWaterMaskDistance + 1e-7)
   })
+  test('times the visible retreat to the screen edge instead of the off-screen simulation edge', () => {
+    const camera = new SandCamera()
+    camera.aspect = 430 / 932
+    const viewport = waveResetViewport(camera)
+    const wave = new WaveResetEffect()
+    const duration = 4
+    const startedAt = 1000
+    const maximumVisibleWaterDistance = (state: ReturnType<WaveResetEffect['update']>) => {
+      let maximum = Number.NEGATIVE_INFINITY
+      for (let index = 0; index <= 1024; index++) {
+        const x = viewport.minX + (viewport.maxX - viewport.minX) * index / 1024
+        maximum = Math.max(maximum, viewport.nearY - state.currentBaseFront - shorelineOffsetAt(x, state.time))
+      }
+      return maximum
+    }
+
+    wave.start(startedAt, duration, viewport)
+    const beforeEnd = wave.update(startedAt + duration * 1000 - 100)
+    expect(maximumVisibleWaterDistance(beforeEnd)).toBeGreaterThan(dryWaterMaskDistance)
+
+    const finished = wave.update(startedAt + duration * 1000)
+    expect(finished.justFinished).toBe(true)
+    expect(maximumVisibleWaterDistance(finished)).toBeLessThanOrEqual(dryWaterMaskDistance + 1e-7)
+    expect(renderExitFrontAt(duration, viewport)).toBeLessThan(renderExitFrontAt(duration) - 0.1)
+  })
+
 })

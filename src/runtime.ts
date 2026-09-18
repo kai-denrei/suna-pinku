@@ -4,7 +4,8 @@ import { InputController } from './input/controller'
 import type { BootMonitor } from './platform/boot'
 import { createGpu } from './platform/gpu'
 import { WaveResetEffect } from './reset/effect'
-import { useMobileGrainFiltering } from './platform/mobile'
+import { waveResetViewport } from './reset/viewport'
+import { useMobileGrainFiltering, useSingleFrameResetPacing } from './platform/mobile'
 import { drawingBuffer } from './platform/viewport'
 import { SandRenderer } from './render/renderer'
 import { FixedClock } from './simulation/clock'
@@ -27,6 +28,8 @@ export async function startSandboard(ui: InterfaceElements, monitor: BootMonitor
   let resetPending = false
   let waveResetInteractive = false
   let waveResetNeedsTransientClear = false
+  const singleFrameResetPacing = useSingleFrameResetPacing()
+  const resetFrameBudget = singleFrameResetPacing ? 1 : 2
   const waveReset = new WaveResetEffect()
   const setToolbarInteractive = (interactive: boolean) => {
     ui.reset.disabled = !interactive
@@ -72,15 +75,19 @@ export async function startSandboard(ui: InterfaceElements, monitor: BootMonitor
       if (stopped) return
       animation = requestAnimationFrame(frame)
       sound.update(now)
-      const frameBudget = waveResetInteractive ? 2 : 1
-      if (document.hidden || framesInFlight >= frameBudget) { clock.reset(); return }
+      const frameBudget = waveResetInteractive ? resetFrameBudget : 1
+      if (document.hidden) { clock.reset(); return }
+      // GPU backpressure must not erase elapsed simulation time. On iOS WebKit
+      // queue completion can arrive a display interval late; resetting here
+      // starves the fixed-step solver while pointer samples continue to queue.
+      if (framesInFlight >= frameBudget) return
       try {
         resize()
         if (resetPending && !waveResetInteractive) {
           resetPending = false
           waveResetInteractive = true
           sound.cancelAll()
-          waveReset.start(now, sound.playResetWave())
+          waveReset.start(now, sound.playResetWave(), waveResetViewport(renderer.camera))
           waveResetNeedsTransientClear = true
           clock.reset()
           setToolbarInteractive(false)
@@ -97,6 +104,10 @@ export async function startSandboard(ui: InterfaceElements, monitor: BootMonitor
           if (waveState.erase) solver.encodeWaveReset(encoder, waveState)
           if (waveState.justFinished) {
             waveResetInteractive = false
+            clock.reset(now)
+            // The final dry frame is submitted below before browser input can
+            // dispatch again. Re-enable immediately at the audio endpoint;
+            // the one-frame GPU gate still prevents simulation overtaking it.
             setToolbarInteractive(true)
           }
         }
@@ -105,7 +116,9 @@ export async function startSandboard(ui: InterfaceElements, monitor: BootMonitor
         renderer.encode(encoder, gpu.context.getCurrentTexture().createView(), activeInput.strokes.cursor, now, activeInput.showPointer, waveState)
         gpu.device.queue.submit([encoder.finish()])
         framesInFlight++
-        void gpu.device.queue.onSubmittedWorkDone().then(() => { framesInFlight = Math.max(0, framesInFlight - 1) }).catch((error: unknown) => monitor.fail(error))
+        void gpu.device.queue.onSubmittedWorkDone().then(() => {
+          framesInFlight = Math.max(0, framesInFlight - 1)
+        }).catch((error: unknown) => monitor.fail(error))
       } catch (error) { monitor.fail(error) }
     }
     window.addEventListener('resize', () => { resizePending = true }, { signal: listeners.signal })

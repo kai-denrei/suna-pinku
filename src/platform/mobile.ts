@@ -14,8 +14,24 @@ export function shouldUseMobileGrainFiltering(environment: MobileRenderEnvironme
   return mobileUserAgent || compactCoarseViewport
 }
 
+export function shouldUseSingleFrameResetPacing(environment: MobileRenderEnvironment) {
+  if (environment.maxTouchPoints <= 0) return false
+  return /iPhone|iPad|iPod/i.test(environment.userAgent)
+    || /Macintosh/i.test(environment.userAgent)
+}
+
 export function useMobileGrainFiltering() {
   return shouldUseMobileGrainFiltering({
+    maxTouchPoints: navigator.maxTouchPoints,
+    coarsePointer: window.matchMedia?.('(pointer: coarse)').matches ?? false,
+    userAgent: navigator.userAgent,
+    width: window.innerWidth,
+    height: window.innerHeight,
+  })
+}
+
+export function useSingleFrameResetPacing() {
+  return shouldUseSingleFrameResetPacing({
     maxTouchPoints: navigator.maxTouchPoints,
     coarsePointer: window.matchMedia?.('(pointer: coarse)').matches ?? false,
     userAgent: navigator.userAgent,

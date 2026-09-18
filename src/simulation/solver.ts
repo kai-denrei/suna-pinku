@@ -37,9 +37,9 @@ export class SandSolver {
     this.resolution = resolution
     this.byteLength = resolution * resolution * 16
     this.buffers = [0, 1].map((index) => device.createBuffer({ label: `Sand state ${index}`, size: this.byteLength, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST }))
-    this.flux = device.createBuffer({ label: 'Eight-neighbor conservative flux', size: this.byteLength * 2, usage: GPUBufferUsage.STORAGE })
-    this.contact = device.createBuffer({ label: 'Pointer contact field', size: this.byteLength, usage: GPUBufferUsage.STORAGE })
-    this.contactPressure = device.createBuffer({ label: 'Pointer contact pressure', size: resolution * resolution * 4, usage: GPUBufferUsage.STORAGE })
+    this.flux = device.createBuffer({ label: 'Eight-neighbor conservative flux', size: this.byteLength * 2, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST })
+    this.contact = device.createBuffer({ label: 'Pointer contact field', size: this.byteLength, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST })
+    this.contactPressure = device.createBuffer({ label: 'Pointer contact pressure', size: resolution * resolution * 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST })
     this.impactBudget = device.createBuffer({ label: 'Frontier impact ejection budget', size: resolution * resolution * 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST })
     this.particleCount = Math.min(SAND.particles, resolution * resolution)
     this.particles = device.createBuffer({ label: 'Mass carrying grains', size: this.particleCount * 32, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST })
@@ -163,12 +163,14 @@ export class SandSolver {
   }
 
   clearTransientState(encoder: GPUCommandEncoder) {
-    // Contact fields do not need clearing while the simulation is paused: a
-    // zero contact count gates reads, and the next active contact pass rewrites
-    // the full fields. Avoiding those clears saves several MB of GPU traffic per
-    // reset frame and keeps STORAGE-only buffers out of clearBuffer().
+    // Reset every non-height field once at wash start. The wave still owns the
+    // visible progressive height reset, but no old contact/flux/particle state
+    // is allowed to survive into the next interaction.
+    encoder.clearBuffer(this.flux)
     encoder.clearBuffer(this.particles)
     encoder.clearBuffer(this.exchange)
+    encoder.clearBuffer(this.contact)
+    encoder.clearBuffer(this.contactPressure)
     encoder.clearBuffer(this.impactBudget)
   }
 

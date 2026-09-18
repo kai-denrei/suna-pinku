@@ -2,6 +2,7 @@ import { expect, test } from 'vitest'
 import { surfaceShader } from '../src/render/shaders'
 import { lightingShader } from '../src/render/lighting'
 import { particleShader, simulationShader } from '../src/simulation/shaders'
+import { waterOverlayShader } from '../src/render/water-reset'
 
 const shaders = [
   ['surface', surfaceShader],
@@ -45,4 +46,14 @@ test('mobile grain filtering preserves full visible material detail', () => {
   expect(mobileFragment).toContain('let depthDetail = 1.0 - smoothstep(0.48, 0.90, footprint);')
   expect(mobileFragment).toContain('let stochasticAmount = smoothstep(0.32, 0.58, footprint);')
   expect(mobileFragment).not.toContain('let detail = 1.0 - smoothstep(0.55, 2.1, footprint);')
+})
+
+
+test('reset water keeps optical shading continuous at framebuffer edges', () => {
+  expect(waterOverlayShader).toContain('fn edgeSafeRefractionUv')
+  expect(waterOverlayShader).toContain('let mirrored = vec2f(1.0) - abs(fract(normalized * 0.5)')
+  expect(waterOverlayShader).not.toContain('fn refractionViewportWeight')
+  expect(waterOverlayShader).not.toContain('safeScale')
+  expect(waterOverlayShader).not.toMatch(/abs\(bed\.[xy]\) > overlay\.waveFront\.w/)
+  expect(waterOverlayShader).toContain('edgeSafeRefractionUv(projectedRed, sourceDimensions)')
 })

@@ -16,5 +16,5 @@ export class FixedClock {
     this.accumulator -= count * this.step
     return count
   }
-  reset() { this.previous = undefined; this.accumulator = 0 }
+  reset(now?: number) { this.previous = now; this.accumulator = 0 }
 }
