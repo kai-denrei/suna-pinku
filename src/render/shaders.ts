@@ -209,7 +209,7 @@ fn reflectiveGlintAt(position: vec2f, normal: vec3f, towardEye: vec3f, light: ve
   let cellSize = 0.0048;
   let cell = floor(position / cellSize);
   let selector = hash2(cell + vec2f(13.7, 41.3));
-  if (selector.x <= 0.962) { return 0.0; }
+  if (selector.x <= 0.995) { return 0.0; }
 
   let centerSeed = hash2(cell + vec2f(73.1, 19.6));
   let center = (cell + 0.12 + centerSeed * 0.76) * cellSize;
