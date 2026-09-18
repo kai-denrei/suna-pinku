@@ -119,8 +119,9 @@ export class SandRenderer {
       this.shadow.opacity, 0, 0, 0,
     ])
     this.device.queue.writeBuffer(this.uniform, 0, this.data)
-    this.lighting.encode(encoder, LIGHT_ANGLE)
-    this.airborneShadow.encode(encoder, LIGHT_DIRECTION)
+    if (!waveState.active || !waveState.incoming) this.lighting.encode(encoder, LIGHT_ANGLE)
+    if (waveState.justStarted) this.airborneShadow.clear(encoder)
+    else if (!waveState.active) this.airborneShadow.encode(encoder, LIGHT_DIRECTION)
     const pass = encoder.beginRenderPass({ label: 'Sand image', colorAttachments: [
       { view: this.post.target, clearValue: { r: 0.1778341, g: 0.12052718, b: 0.06615726, a: 1 }, loadOp: 'clear', storeOp: 'store' },
       { view: this.post.glintTarget, clearValue: { r: 0, g: 0, b: 0, a: 0 }, loadOp: 'clear', storeOp: 'store' },
@@ -131,9 +132,11 @@ export class SandRenderer {
     pass.setBindGroup(0, this.groups[this.solver.stateIndex])
     pass.setIndexBuffer(this.indices, 'uint32')
     pass.drawIndexed(this.indexCount)
-    pass.setPipeline(this.grainPipeline)
-    pass.setBindGroup(0, this.grainGroup)
-    pass.draw(6, this.solver.particleCount)
+    if (!waveState.active) {
+      pass.setPipeline(this.grainPipeline)
+      pass.setBindGroup(0, this.grainGroup)
+      pass.draw(6, this.solver.particleCount)
+    }
     pass.end()
     this.post.setWaveState(waveState, this.camera)
     this.post.encode(encoder, target)

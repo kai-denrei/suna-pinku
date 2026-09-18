@@ -130,6 +130,19 @@ export class AirborneShadow {
     pass.end()
   }
 
+  clear(encoder: GPUCommandEncoder) {
+    const pass = encoder.beginRenderPass({
+      label: 'Clear airborne sand shadow',
+      colorAttachments: [{
+        view: this.texture.createView(),
+        clearValue: { r: 0, g: 0, b: 0, a: 0 },
+        loadOp: 'clear',
+        storeOp: 'store',
+      }],
+    })
+    pass.end()
+  }
+
   dispose() {
     this.texture.destroy()
     this.uniform.destroy()

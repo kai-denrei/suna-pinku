@@ -1,6 +1,7 @@
 import { SAND, type Stroke } from '../config'
 import { checkedShader } from '../platform/shader'
 import type { WaveResetState } from '../reset/effect'
+import { WAVE_RESET } from '../reset/effect'
 import { particleShader, simulationShader } from './shaders'
 import { waveResetShader } from './wave-reset-shader'
 
@@ -44,7 +45,7 @@ export class SandSolver {
     this.particles = device.createBuffer({ label: 'Mass carrying grains', size: this.particleCount * 32, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST })
     this.exchange = device.createBuffer({ label: 'Fixed-point grain exchange', size: resolution * resolution * 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST })
     this.uniforms = Array.from({ length: SAND.maxSteps }, () => device.createBuffer({ size: paramBytes, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST }))
-    this.waveResetUniform = device.createBuffer({ label: 'Wave reset parameters', size: 32, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST })
+    this.waveResetUniform = device.createBuffer({ label: 'Wave reset parameters', size: 48, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST })
   }
   get state() { return this.buffers[this.current] }
   get stateIndex() { return this.current }
@@ -134,16 +135,28 @@ export class SandSolver {
   }
 
   encodeWaveReset(encoder: GPUCommandEncoder, state: WaveResetState) {
+    const spacing = SAND.extent / this.resolution
+    const halfExtent = SAND.extent * 0.5
+    const shorelineOffsetBound = halfExtent * Math.abs(WAVE_RESET.shorelineTilt)
+      + WAVE_RESET.shorelineAmplitude * (1 + Math.abs(WAVE_RESET.shorelineBlend) + 0.55)
+    const lowerFront = Math.min(state.erasePreviousBaseFront, state.eraseCurrentBaseFront) - shorelineOffsetBound
+    const upperFront = Math.max(state.erasePreviousBaseFront, state.eraseCurrentBaseFront) + shorelineOffsetBound
+    const rowStart = Math.max(0, Math.min(this.resolution, Math.floor((lowerFront + halfExtent) / spacing) - 1))
+    const rowEnd = Math.max(rowStart, Math.min(this.resolution, Math.ceil((upperFront + halfExtent) / spacing) + 1))
+    const rowCount = rowEnd - rowStart
+    if (rowCount <= 0) return
+
     const data = new Float32Array([
-      this.resolution, SAND.extent / this.resolution, SAND.extent, SAND.depth,
+      this.resolution, spacing, SAND.extent, SAND.depth,
       state.erasePreviousBaseFront, state.eraseCurrentBaseFront, state.erasePreviousTime, state.eraseCurrentTime,
+      rowStart, rowCount, 0, 0,
     ])
     this.device.queue.writeBuffer(this.waveResetUniform, 0, data)
     const pass = encoder.beginComputePass({ label: 'Wave reset' })
     pass.setPipeline(this.waveResetPipeline)
     for (const group of this.waveResetGroups) {
       pass.setBindGroup(0, group)
-      pass.dispatchWorkgroups(Math.ceil(this.resolution / 8), Math.ceil(this.resolution / 8))
+      pass.dispatchWorkgroups(Math.ceil(this.resolution / 8), Math.ceil(rowCount / 8))
     }
     pass.end()
     this.generation++

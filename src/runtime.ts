@@ -22,7 +22,7 @@ export async function startSandboard(ui: InterfaceElements, monitor: BootMonitor
   let input: InputController | undefined
   let animation = 0
   let stopped = false
-  let inFlight = false
+  let framesInFlight = 0
   let resizePending = true
   let resetPending = false
   let waveResetInteractive = false
@@ -72,7 +72,8 @@ export async function startSandboard(ui: InterfaceElements, monitor: BootMonitor
       if (stopped) return
       animation = requestAnimationFrame(frame)
       sound.update(now)
-      if (document.hidden || inFlight) { clock.reset(); return }
+      const frameBudget = waveResetInteractive ? 2 : 1
+      if (document.hidden || framesInFlight >= frameBudget) { clock.reset(); return }
       try {
         resize()
         if (resetPending && !waveResetInteractive) {
@@ -103,8 +104,8 @@ export async function startSandboard(ui: InterfaceElements, monitor: BootMonitor
         if (count > 0) solver.encode(encoder, Array.from({ length: count }, () => activeInput.strokes.nextBatch()))
         renderer.encode(encoder, gpu.context.getCurrentTexture().createView(), activeInput.strokes.cursor, now, activeInput.showPointer, waveState)
         gpu.device.queue.submit([encoder.finish()])
-        inFlight = true
-        void gpu.device.queue.onSubmittedWorkDone().then(() => { inFlight = false }).catch((error: unknown) => monitor.fail(error))
+        framesInFlight++
+        void gpu.device.queue.onSubmittedWorkDone().then(() => { framesInFlight = Math.max(0, framesInFlight - 1) }).catch((error: unknown) => monitor.fail(error))
       } catch (error) { monitor.fail(error) }
     }
     window.addEventListener('resize', () => { resizePending = true }, { signal: listeners.signal })
