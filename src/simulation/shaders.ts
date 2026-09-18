@@ -25,6 +25,7 @@ ${paramsLayout}
 @group(0) @binding(4) var<storage, read_write> exchange: array<atomic<i32>>;
 @group(0) @binding(5) var<storage, read_write> contactField: array<vec4f>;
 @group(0) @binding(6) var<storage, read_write> contactPressure: array<f32>;
+@group(0) @binding(7) var<storage, read_write> impactBudget: array<atomic<i32>>;
 
 fn hash(position: vec2f) -> f32 {
   return fract(sin(dot(position, vec2f(127.1, 311.7))) * 43758.5453);
@@ -74,6 +75,15 @@ fn pressureAt(cell: vec2i) -> f32 {
   if (params.tool.x <= 0.0) { return 0.0; }
   return contactPressure[address(cell)];
 }
+fn impactResponse(speed: f32) -> f32 {
+  return smoothstep(${SAND.impactSpeedStart}, ${SAND.impactSpeedFull}, speed);
+}
+fn impactCore(contact: vec4f, pressure: f32) -> f32 {
+  return impactResponse(length(contact.zw)) * pressure * pow(contact.x, 1.75);
+}
+fn penetrationFor(contact: vec4f, pressure: f32) -> f32 {
+  return contact.x * pressure * params.tool.y + impactCore(contact, pressure) * ${SAND.impactIndentation};
+}
 @compute @workgroup_size(8, 8)
 fn initialize(@builtin(global_invocation_id) invocation: vec3u) {
   if (any(invocation.xy >= vec2u(u32(params.grid.x)))) { return; }
@@ -99,20 +109,26 @@ fn transport(@builtin(global_invocation_id) invocation: vec3u) {
   let center = source[address(cell)];
   let toolContact = contactAt(cell);
   let toolPressure = pressureAt(cell);
-  let penetration = toolContact.x * toolPressure * params.tool.y;
+  let penetration = penetrationFor(toolContact, toolPressure);
   let effectiveHeight = center.x + penetration;
   let toolSpeed = length(toolContact.zw);
   let motionDirection = toolContact.zw / max(toolSpeed, 1e-8);
   let speedResponse = toolSpeed / (toolSpeed + 0.35);
+  let impact = impactCore(toolContact, toolPressure);
   let centerShell = toolContact.y;
   var outgoing = Flux(vec4f(0.0), vec4f(0.0));
   var escape = Flux(vec4f(0.0), vec4f(0.0));
+  var coverageGradient = vec2f(0.0);
   for (var axis = 0u; axis < 8u; axis++) {
     let neighbor = cell + neighbors[axis];
     if (any(neighbor < vec2i(0)) || any(neighbor >= vec2i(i32(params.grid.x)))) { continue; }
     let other = source[address(neighbor)];
     let otherContact = contactAt(neighbor);
-    let otherPenetration = otherContact.x * pressureAt(neighbor) * params.tool.y;
+    if (axis == 0u) { coverageGradient += vec2f(-otherContact.x * 0.5, 0.0); }
+    if (axis == 1u) { coverageGradient += vec2f(otherContact.x * 0.5, 0.0); }
+    if (axis == 2u) { coverageGradient += vec2f(0.0, -otherContact.x * 0.5); }
+    if (axis == 3u) { coverageGradient += vec2f(0.0, otherContact.x * 0.5); }
+    let otherPenetration = penetrationFor(otherContact, pressureAt(neighbor));
     let friction = mix(params.physics.z, params.physics.w, clamp(max(center.y, other.y) * 35.0, 0.0, 1.0));
     let linkLength = select(1.0, 1.41421356, axis >= 4u);
     let weight = select(0.66666667, 0.16666667, axis >= 4u);
@@ -129,10 +145,10 @@ fn transport(@builtin(global_invocation_id) invocation: vec3u) {
     let supercritical = smoothstep(params.grid.y * 1.5, params.grid.y * 5.0, physicalExcess);
     let avalancheBoost = 1.0 + supercritical * mix(0.35, 0.85, max(contactYield, disturbedShell));
     var amount = excess * params.grid.w * params.tool.z * weight * avalancheBoost;
-    amount *= 1.0 + toolContact.x * speedResponse * forward * 0.55;
+    amount *= 1.0 + toolContact.x * speedResponse * forward * 0.55 + impact * forward * 0.95;
     let edge = max(0.0, penetration - otherPenetration) / max(penetration, 1e-7);
     let sideways = toolContact.x * (1.0 - abs(dot(axisDirection, motionDirection))) * 0.06;
-    let escapeWeight = (edge + sideways) * (1.0 + speedResponse * forward * 0.8) * weight;
+    let escapeWeight = (edge + sideways) * (1.0 + speedResponse * forward * 0.8 + impact * forward * 1.35) * weight;
     if (axis < 4u) {
       outgoing.axial[axis] = amount;
       escape.axial[axis] = escapeWeight;
@@ -141,11 +157,12 @@ fn transport(@builtin(global_invocation_id) invocation: vec3u) {
       escape.diagonal[axis - 4u] = escapeWeight;
     }
   }
+  let frontier = clamp(max(0.0, -dot(coverageGradient, motionDirection)) / max(toolContact.x, 0.1), 0.0, 1.0);
   let targetHeight = params.physics.x - penetration;
   let overlap = max(0.0, center.x - targetHeight);
   let existing = totalFlux(outgoing);
   let escapeTotal = totalFlux(escape);
-  let evacuationFraction = mix(0.32, 0.46, speedResponse);
+  let evacuationFraction = mix(mix(0.32, 0.46, speedResponse), ${SAND.impactEvacuation}, impact);
   let extra = max(0.0, overlap * evacuationFraction - existing);
   if (extra > 0.0 && escapeTotal > 1e-8) {
     outgoing.axial += escape.axial * (extra / escapeTotal);
@@ -154,7 +171,11 @@ fn transport(@builtin(global_invocation_id) invocation: vec3u) {
   let total = totalFlux(outgoing);
   let available = max(0.0, center.x - params.physics.y);
   let limiter = min(1.0, available / max(total, 1e-10));
-  flux[address(cell)] = Flux(outgoing.axial * limiter, outgoing.diagonal * limiter);
+  let limited = Flux(outgoing.axial * limiter, outgoing.diagonal * limiter);
+  flux[address(cell)] = limited;
+  let remaining = max(0.0, center.x - params.physics.y - totalFlux(limited));
+  let desiredEjection = totalFlux(limited) * ${SAND.impactEjectionFraction} * impact * clamp(frontier * 1.4, 0.0, 1.0);
+  atomicStore(&impactBudget[address(cell)], i32(round(min(remaining, desiredEjection) * 1e9)));
 }
 @compute @workgroup_size(8, 8)
 fn integrate(@builtin(global_invocation_id) invocation: vec3u) {
@@ -196,6 +217,9 @@ struct Grain { position: vec4f, velocity: vec4f }
 @group(0) @binding(2) var<storage, read> flux: array<Flux>;
 @group(0) @binding(3) var<storage, read_write> grains: array<Grain>;
 @group(0) @binding(4) var<storage, read_write> exchange: array<atomic<i32>>;
+@group(0) @binding(5) var<storage, read> contactField: array<vec4f>;
+@group(0) @binding(6) var<storage, read> contactPressure: array<f32>;
+@group(0) @binding(7) var<storage, read_write> impactBudget: array<atomic<i32>>;
 fn random(seed: u32) -> f32 {
   var value = seed * 747796405u + 2891336453u;
   value = ((value >> ((value >> 28u) + 4u)) ^ value) * 277803737u;
@@ -204,6 +228,20 @@ fn random(seed: u32) -> f32 {
 fn address(position: vec2f) -> u32 {
   let cell = vec2u(clamp((position / params.grid.z + 0.5) * params.grid.x, vec2f(0.0), vec2f(params.grid.x - 1.0)));
   return cell.y * u32(params.grid.x) + cell.x;
+}
+
+fn impactResponse(speed: f32) -> f32 {
+  return smoothstep(${SAND.impactSpeedStart}, ${SAND.impactSpeedFull}, speed);
+}
+fn claimImpactMass(cell: u32, mass: f32) -> bool {
+  let units = max(1, i32(round(mass * 1e9)));
+  let previous = atomicSub(&impactBudget[cell], units);
+  if (previous >= units) { return true; }
+  atomicAdd(&impactBudget[cell], units);
+  return false;
+}
+fn cellCenter(cell: u32) -> vec2f {
+  return (vec2f(f32(cell % u32(params.grid.x)), f32(cell / u32(params.grid.x))) + 0.5) * params.grid.y - params.grid.z * 0.5;
 }
 fn heightAt(cell: vec2i) -> f32 {
   let bounded = vec2u(clamp(cell, vec2i(0), vec2i(i32(params.grid.x) - 1)));
@@ -253,31 +291,80 @@ fn animate(@builtin(global_invocation_id) invocation: vec3u) {
       }
     }
   } else {
-    let stride = max(1u, u32(params.grid.x * params.grid.x) / arrayLength(&grains));
     grain.velocity.w += 1.0;
     let seed = index * 991u + u32(grain.velocity.w);
-    let cell = min(index * stride + u32(grain.velocity.w) % stride, arrayLength(&bed) - 1u);
-    let flow = flux[cell];
-    let moved = totalFlux(flow);
-    let reserve = bed[cell].x - moved - params.physics.y;
-    let bedVelocity = bed[cell].zw;
-    let speed = length(bedVelocity);
-    let agitation = smoothstep(0.055, 0.24, speed);
-    let sourceMoved = max(moved, bed[cell].y * params.grid.w * 0.35);
-    let mass = mix(0.0000025, 0.0000055, random(seed + 13u));
-    let launchMass = sourceMoved * f32(stride) * agitation * 0.004;
-    let launchChance = min(1.0, launchMass / mass);
-    if (reserve > mass * 1.2 && random(seed) < launchChance) {
-      let position = (vec2f(f32(cell % u32(params.grid.x)), f32(cell / u32(params.grid.x))) + 0.5) * params.grid.y - params.grid.z * 0.5;
-      let transport = fluxVector(flow);
-      let direction = select(transport / max(length(transport), 1e-9), bedVelocity / max(speed, 1e-9), speed > 0.01);
-      let side = vec2f(-direction.y, direction.x);
-      let scatter = (random(seed + 31u) - 0.5) * (0.02 + speed * 0.12);
-      let horizontal = bedVelocity * (0.68 + random(seed + 5u) * 0.22) + direction * (0.018 + speed * 0.12) + side * scatter;
-      let lift = 0.018 + sqrt(max(speed, 0.0)) * (0.16 + random(seed + 7u) * 0.055);
-      grain.position = vec4f(position.x, bed[cell].x + 0.0003, position.y, mass);
-      grain.velocity = vec4f(horizontal.x, lift, horizontal.y, 0.0);
-      atomicSub(&exchange[cell], i32(round(mass * 1e9)));
+    var launched = false;
+    let contactCount = u32(params.tool.x);
+    if (contactCount > 0u) {
+      let contactIndex = index % contactCount;
+      let tool = params.contacts[contactIndex];
+      let toolSpeed = length(tool.motion.xy);
+      let toolImpact = impactResponse(toolSpeed);
+      if (toolImpact > 0.0) {
+        let direction = tool.motion.xy / max(toolSpeed, 1e-8);
+        let side = vec2f(-direction.y, direction.x);
+        let candidate = index / contactCount;
+        let sampleIndex = candidate % 256u;
+        let sampleCycle = candidate / 256u;
+        let column = sampleIndex % 16u;
+        let row = sampleIndex / 16u;
+        let forward = (mix(-0.08, 1.08, (f32(column) + random(seed + sampleCycle * 17u + 3u)) / 16.0)) * tool.start.z;
+        let lateral = (mix(-1.05, 1.05, (f32(row) + random(seed + sampleCycle * 23u + 11u)) / 16.0)) * tool.start.z;
+        let candidatePosition = tool.end.xy + direction * forward + side * lateral;
+        let cell = address(candidatePosition);
+        let localContact = contactField[cell];
+        let localSpeed = length(localContact.zw);
+        let localImpact = impactResponse(localSpeed) * contactPressure[cell] * pow(localContact.x, 1.75);
+        let mass = mix(0.0000025, 0.0000055, random(seed + 13u));
+        if (localImpact > 0.0 && claimImpactMass(cell, mass)) {
+          let surfacePosition = cellCenter(cell);
+          let surface = contactAt(surfacePosition);
+          let motionDirection = localContact.zw / max(localSpeed, 1e-8);
+          let transport = fluxVector(flux[cell]);
+          let transportDirection = transport / max(length(transport), 1e-9);
+          let launchDirection = normalize(motionDirection + transportDirection * 0.28);
+          let launchSide = vec2f(-launchDirection.y, launchDirection.x);
+          let spread = (random(seed + 31u) - 0.5) * localSpeed * 0.16;
+          let horizontalSpeed = localSpeed * (0.28 + random(seed + 5u) * 0.28);
+          let horizontal = launchDirection * horizontalSpeed + launchSide * spread;
+          let uphill = max(0.0, dot(surface.yz, motionDirection));
+          let loft = pow(random(seed + 7u), 2.4);
+          let rareBurst = pow(random(seed + 41u), 8.0);
+          let lift = 0.055 + localSpeed * (0.06 + loft * 0.18 + rareBurst * 0.18 + min(uphill, 0.8) * 0.12);
+          grain.position = vec4f(surfacePosition.x, surface.x + 0.0003, surfacePosition.y, mass);
+          grain.velocity = vec4f(horizontal.x, lift, horizontal.y, 0.0);
+          atomicSub(&exchange[cell], i32(round(mass * 1e9)));
+          launched = true;
+        }
+      }
+    }
+    if (!launched) {
+      let stride = max(1u, u32(params.grid.x * params.grid.x) / arrayLength(&grains));
+      let cell = min(index * stride + u32(grain.velocity.w) % stride, arrayLength(&bed) - 1u);
+      let flow = flux[cell];
+      let moved = totalFlux(flow);
+      let reserve = bed[cell].x - moved - params.physics.y;
+      let bedVelocity = bed[cell].zw;
+      let speed = length(bedVelocity);
+      let agitation = smoothstep(0.055, 0.24, speed);
+      let sourceMoved = max(moved, bed[cell].y * params.grid.w * 0.35);
+      let mass = mix(0.0000025, 0.0000055, random(seed + 13u));
+      let launchMass = sourceMoved * f32(stride) * agitation * 0.004;
+      let launchChance = min(1.0, launchMass / mass);
+      let contactSpeed = length(contactField[cell].zw);
+      let activeImpactContact = params.tool.x > 0.0 && contactField[cell].x > 0.001 && impactResponse(contactSpeed) > 0.0;
+      if (!activeImpactContact && reserve > mass * 1.2 && random(seed) < launchChance) {
+        let position = cellCenter(cell);
+        let transport = fluxVector(flow);
+        let direction = select(transport / max(length(transport), 1e-9), bedVelocity / max(speed, 1e-9), speed > 0.01);
+        let side = vec2f(-direction.y, direction.x);
+        let scatter = (random(seed + 31u) - 0.5) * (0.02 + speed * 0.12);
+        let horizontal = bedVelocity * (0.68 + random(seed + 5u) * 0.22) + direction * (0.018 + speed * 0.12) + side * scatter;
+        let lift = 0.018 + sqrt(max(speed, 0.0)) * (0.16 + random(seed + 7u) * 0.055);
+        grain.position = vec4f(position.x, bed[cell].x + 0.0003, position.y, mass);
+        grain.velocity = vec4f(horizontal.x, lift, horizontal.y, 0.0);
+        atomicSub(&exchange[cell], i32(round(mass * 1e9)));
+      }
     }
   }
   grains[index] = grain;

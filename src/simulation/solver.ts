@@ -13,6 +13,7 @@ export class SandSolver {
   private readonly exchange: GPUBuffer
   private readonly contact: GPUBuffer
   private readonly contactPressure: GPUBuffer
+  private readonly impactBudget: GPUBuffer
   private particlePipeline!: GPUComputePipeline
   private particleGroups: GPUBindGroup[][] = []
   private readonly uniforms: GPUBuffer[]
@@ -33,6 +34,7 @@ export class SandSolver {
     this.flux = device.createBuffer({ label: 'Eight-neighbor conservative flux', size: this.byteLength * 2, usage: GPUBufferUsage.STORAGE })
     this.contact = device.createBuffer({ label: 'Pointer contact field', size: this.byteLength, usage: GPUBufferUsage.STORAGE })
     this.contactPressure = device.createBuffer({ label: 'Pointer contact pressure', size: resolution * resolution * 4, usage: GPUBufferUsage.STORAGE })
+    this.impactBudget = device.createBuffer({ label: 'Frontier impact ejection budget', size: resolution * resolution * 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST })
     this.particleCount = Math.min(SAND.particles, resolution * resolution)
     this.particles = device.createBuffer({ label: 'Mass carrying grains', size: this.particleCount * 32, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST })
     this.exchange = device.createBuffer({ label: 'Fixed-point grain exchange', size: resolution * resolution * 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST })
@@ -52,6 +54,7 @@ export class SandSolver {
       { binding: 4, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'storage' } },
       { binding: 5, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'storage' } },
       { binding: 6, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'storage' } },
+      { binding: 7, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'storage' } },
     ] })
     const pipelineLayout = this.device.createPipelineLayout({ bindGroupLayouts: [layout] })
     const make = (entryPoint: string) => this.device.createComputePipelineAsync({ label: entryPoint, layout: pipelineLayout, compute: { module, entryPoint } })
@@ -62,13 +65,15 @@ export class SandSolver {
       { binding: 2, resource: { buffer: this.buffers[1 - index] } }, { binding: 3, resource: { buffer: this.flux } },
       { binding: 4, resource: { buffer: this.exchange } }, { binding: 5, resource: { buffer: this.contact } },
       { binding: 6, resource: { buffer: this.contactPressure } },
+      { binding: 7, resource: { buffer: this.impactBudget } },
     ] })))
     const particles = await checkedShader(this.device, 'Mass carrying grains WGSL', particleShader)
     this.particlePipeline = await this.device.createComputePipelineAsync({ layout: 'auto', compute: { module: particles, entryPoint: 'animate' } })
     this.particleGroups = this.uniforms.map((uniform) => this.buffers.map((buffer) => this.device.createBindGroup({ layout: this.particlePipeline.getBindGroupLayout(0), entries: [
       { binding: 0, resource: { buffer: uniform } }, { binding: 1, resource: { buffer } },
       { binding: 2, resource: { buffer: this.flux } }, { binding: 3, resource: { buffer: this.particles } },
-      { binding: 4, resource: { buffer: this.exchange } },
+      { binding: 4, resource: { buffer: this.exchange } }, { binding: 5, resource: { buffer: this.contact } },
+      { binding: 6, resource: { buffer: this.contactPressure } }, { binding: 7, resource: { buffer: this.impactBudget } },
     ] })))
     this.reset()
   }
@@ -97,6 +102,7 @@ export class SandSolver {
     const encoder = this.device.createCommandEncoder()
     encoder.clearBuffer(this.particles)
     encoder.clearBuffer(this.exchange)
+    encoder.clearBuffer(this.impactBudget)
     const pass = encoder.beginComputePass()
     pass.setPipeline(this.pipelines.initialize)
     pass.setBindGroup(0, this.groups[0][1 - this.current])
@@ -129,5 +135,5 @@ export class SandSolver {
     })
   }
 
-  dispose() { [...this.buffers, this.flux, this.particles, this.exchange, this.contact, this.contactPressure, ...this.uniforms].forEach((buffer) => buffer.destroy()) }
+  dispose() { [...this.buffers, this.flux, this.particles, this.exchange, this.contact, this.contactPressure, this.impactBudget, ...this.uniforms].forEach((buffer) => buffer.destroy()) }
 }

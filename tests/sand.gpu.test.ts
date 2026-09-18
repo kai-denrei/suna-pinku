@@ -149,6 +149,47 @@ test.each([-0.1, 0, 0.1])('grain impacts respect slope %s and return their mass 
   } finally { solver.dispose() }
 })
 
+test('a fast settled-bed impact immediately cuts deeper and ejects from the advancing frontier', async () => {
+  const slow = new SandSolver(device, 128)
+  const fast = new SandSolver(device, 128)
+  await Promise.all([slow.initialize(), fast.initialize()])
+  try {
+    const slowInitial = await readState(slow)
+    const fastInitial = await readState(fast)
+    const base = { from: { x: -0.055, y: 0 }, to: { x: 0.055, y: 0 }, radius: 0.014, pressure: 0.82, active: true }
+    step(slow, { ...base, velocity: { x: 0.08, y: 0 } }, 1)
+    step(fast, { ...base, velocity: { x: 1.1, y: 0 } }, 1)
+    const slowState = await readState(slow)
+    const fastState = await readState(fast)
+    const fastGrains = await readParticles(fast)
+    let slowDepth = 0
+    let fastDepth = 0
+    for (let index = 0; index < slowState.length; index += 4) {
+      slowDepth = Math.max(slowDepth, slowInitial[index] - slowState[index])
+      fastDepth = Math.max(fastDepth, fastInitial[index] - fastState[index])
+      expect(fastState[index]).toBeGreaterThanOrEqual(SAND.floor - 1e-6)
+    }
+    let airborne = 0
+    let forwardParticles = 0
+    let forwardMomentum = 0
+    let totalParticles = 0
+    for (let index = 0; index < fastGrains.length; index += 8) {
+      if (fastGrains[index + 3] <= 0) continue
+      airborne += fastGrains[index + 3]
+      totalParticles++
+      if (fastGrains[index] > base.to.x - base.radius * 0.35) forwardParticles++
+      forwardMomentum += fastGrains[index + 4]
+    }
+    expect(fastDepth).toBeGreaterThan(slowDepth * 1.45)
+    expect(airborne).toBeGreaterThan(0)
+    expect(totalParticles).toBeGreaterThan(0)
+    expect(forwardParticles / totalParticles).toBeGreaterThan(0.65)
+    expect(forwardMomentum).toBeGreaterThan(0)
+    expect(Math.abs((volume(fastState) + airborne) / volume(fastInitial) - 1)).toBeLessThan(0.000004)
+    expect(errors).toEqual([])
+  } finally { slow.dispose(); fast.dispose() }
+})
+
 test('gesture speed changes bed momentum and airborne mass while conserving sand', async () => {
   const slow = new SandSolver(device, 128)
   const fast = new SandSolver(device, 128)
