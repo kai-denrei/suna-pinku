@@ -5,22 +5,25 @@ const enterFraction = 0.44
 
 export const WAVE_RESET = {
   coverageMargin: 0.10,
-  shorelineTilt: -0.055,
-  shorelineAmplitude: 0.010,
-  shorelineFrequencyA: 19.0,
-  shorelineFrequencyB: 8.5,
-  shorelineSpeedA: 1.35,
-  shorelineSpeedB: -0.82,
-  shorelineBlend: 0.46,
+  visibleInset: 0.030,
+  shorelineTilt: -0.060,
+  shorelineAmplitude: 0.018,
+  shorelineFrequencyA: 20.0,
+  shorelineFrequencyB: 10.0,
+  shorelineFrequencyC: 5.2,
+  shorelineSpeedA: 1.55,
+  shorelineSpeedB: -0.94,
+  shorelineSpeedC: 0.62,
+  shorelineBlend: 0.50,
   shorelineFeather: 0.018,
-  foamWidth: 0.042,
-  foamTrail: 0.060,
+  foamWidth: 0.052,
+  foamTrail: 0.090,
   waterDepth: 0.14,
-  waterOpacity: 0.66,
-  waterTintStrength: 0.62,
-  washGloss: 0.28,
+  waterOpacity: 0.50,
+  waterTintStrength: 0.58,
+  washGloss: 0.42,
   rippleScale: 24,
-  rippleDrift: 0.38,
+  rippleDrift: 0.48,
 } as const
 
 export type WaveResetState = {
@@ -33,20 +36,25 @@ export type WaveResetState = {
   previousBaseFront: number
   currentBaseFront: number
   progress: number
+  erasePreviousBaseFront: number
+  eraseCurrentBaseFront: number
+  erasePreviousTime: number
+  eraseCurrentTime: number
 }
 
 const halfExtent = SAND.extent * 0.5
-const travelSpan = SAND.extent + WAVE_RESET.coverageMargin * 2
-const startFront = halfExtent + WAVE_RESET.coverageMargin
-const endFront = -halfExtent - WAVE_RESET.coverageMargin
+const renderEntryFront = halfExtent - WAVE_RESET.visibleInset
+const crestFront = -halfExtent - WAVE_RESET.coverageMargin
+const renderExitFront = halfExtent + WAVE_RESET.coverageMargin
+const eraseOriginFront = renderExitFront
 
 function smooth(value: number) {
   const t = Math.max(0, Math.min(1, value))
   return t * t * (3 - 2 * t)
 }
 
-function frontForCoverage(coverage: number) {
-  return startFront - coverage * travelSpan
+function mix(from: number, to: number, amount: number) {
+  return from + (to - from) * amount
 }
 
 export function idleWaveResetState(): WaveResetState {
@@ -57,9 +65,13 @@ export function idleWaveResetState(): WaveResetState {
     justFinished: false,
     erase: false,
     time: 0,
-    previousBaseFront: startFront,
-    currentBaseFront: startFront,
+    previousBaseFront: renderExitFront,
+    currentBaseFront: renderExitFront,
     progress: 0,
+    erasePreviousBaseFront: eraseOriginFront,
+    eraseCurrentBaseFront: eraseOriginFront,
+    erasePreviousTime: 0,
+    eraseCurrentTime: 0,
   }
 }
 
@@ -67,53 +79,80 @@ export class WaveResetEffect {
   private active = false
   private startedAt = 0
   private durationSeconds = defaultWaveSeconds
-  private previousBaseFront = startFront
+  private previousRenderFront = renderEntryFront
+  private previousEraseFront = eraseOriginFront
+  private previousEraseTime = 0
+  private firstUpdate = true
 
   start(now: number, durationSeconds?: number) {
     this.active = true
     this.startedAt = now
     this.durationSeconds = Number.isFinite(durationSeconds) && durationSeconds && durationSeconds > 0 ? durationSeconds : defaultWaveSeconds
-    this.previousBaseFront = startFront
+    this.previousRenderFront = renderEntryFront
+    this.previousEraseFront = eraseOriginFront
+    this.previousEraseTime = 0
+    this.firstUpdate = true
   }
 
-  update(now: number) {
+  update(now: number): WaveResetState {
     if (!this.active) return idleWaveResetState()
+
     const elapsedSeconds = Math.max(0, (now - this.startedAt) / 1000)
     const enterSeconds = Math.max(this.durationSeconds * enterFraction, 0.001)
     const retreatSeconds = Math.max(this.durationSeconds - enterSeconds, 0.001)
-    const previous = this.previousBaseFront
+    const previousRenderFront = this.previousRenderFront
+
+    const eraseCurrentTime = Math.min(elapsedSeconds, enterSeconds)
+    const eraseProgress = smooth(eraseCurrentTime / enterSeconds)
+    const eraseCurrentFront = mix(renderEntryFront, crestFront, eraseProgress)
+    const erase = eraseCurrentFront < this.previousEraseFront - 1e-6
+
     let incoming = true
     let progress: number
-    let current: number
+    let currentRenderFront: number
+    let active = true
+    let justFinished = false
+
     if (elapsedSeconds < enterSeconds) {
       progress = smooth(elapsedSeconds / enterSeconds)
-      current = frontForCoverage(progress)
+      currentRenderFront = mix(renderEntryFront, crestFront, progress)
     } else if (elapsedSeconds < this.durationSeconds) {
       incoming = false
       progress = smooth((elapsedSeconds - enterSeconds) / retreatSeconds)
-      current = frontForCoverage(1 - progress)
+      currentRenderFront = mix(crestFront, renderExitFront, progress)
     } else {
-      this.active = false
-      this.previousBaseFront = startFront
-      return {
-        ...idleWaveResetState(),
-        justFinished: true,
-      }
+      incoming = false
+      progress = 1
+      currentRenderFront = renderExitFront
+      active = false
+      justFinished = true
     }
+
     const state: WaveResetState = {
-      active: true,
+      active,
       incoming,
-      justStarted: previous === startFront && elapsedSeconds === 0,
-      justFinished: false,
-      erase: incoming && current < previous - 1e-5,
-      time: elapsedSeconds,
-      previousBaseFront: previous,
-      currentBaseFront: current,
+      justStarted: this.firstUpdate,
+      justFinished,
+      erase,
+      time: Math.min(elapsedSeconds, this.durationSeconds),
+      previousBaseFront: previousRenderFront,
+      currentBaseFront: currentRenderFront,
       progress,
+      erasePreviousBaseFront: this.previousEraseFront,
+      eraseCurrentBaseFront: eraseCurrentFront,
+      erasePreviousTime: this.previousEraseTime,
+      eraseCurrentTime,
     }
-    this.previousBaseFront = current
+
+    this.firstUpdate = false
+    this.previousRenderFront = currentRenderFront
+    if (erase) {
+      this.previousEraseFront = eraseCurrentFront
+      this.previousEraseTime = eraseCurrentTime
+    }
+    if (justFinished) this.active = false
     return state
   }
 }
 
-export { endFront, startFront }
+export { crestFront, eraseOriginFront, renderEntryFront, renderExitFront }

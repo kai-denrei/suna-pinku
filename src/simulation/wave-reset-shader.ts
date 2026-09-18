@@ -1,4 +1,3 @@
-import { WAVE_RESET } from '../reset/effect'
 import { waveShoreWgsl } from '../reset/wgsl'
 
 export const waveResetShader = `
@@ -6,7 +5,6 @@ ${waveShoreWgsl}
 struct ResetParams {
   grid: vec4f,
   wave: vec4f,
-  mask: vec4f,
 }
 @group(0) @binding(0) var<uniform> params: ResetParams;
 @group(0) @binding(1) var<storage, read_write> state: array<vec4f>;
@@ -29,12 +27,10 @@ fn main(@builtin(global_invocation_id) invocation: vec3u) {
   if (any(invocation.xy >= vec2u(u32(params.grid.x)))) { return; }
   let position = location(invocation.xy);
   let previousFront = shorelineFront(position.x, params.wave.x, params.wave.z);
-  let currentFront = shorelineFront(position.x, params.wave.y, params.wave.z);
+  let currentFront = shorelineFront(position.x, params.wave.y, params.wave.w);
   let coveredBefore = position.y >= previousFront;
   let coveredNow = position.y >= currentFront;
-  if (!coveredNow || coveredBefore == coveredNow) { return; }
-  let edgeDistance = position.y - currentFront;
-  if (edgeDistance > params.wave.w + ${WAVE_RESET.shorelineFeather}) { return; }
+  if (!coveredNow || coveredBefore) { return; }
   state[address(invocation.xy)] = vec4f(initialHeight(position, invocation.xy), 0.0, 0.0, 0.0);
 }
 `

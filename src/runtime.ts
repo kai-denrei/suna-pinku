@@ -26,6 +26,7 @@ export async function startSandboard(ui: InterfaceElements, monitor: BootMonitor
   let resizePending = true
   let resetPending = false
   let waveResetInteractive = false
+  let waveResetNeedsTransientClear = false
   const waveReset = new WaveResetEffect()
   const setToolbarInteractive = (interactive: boolean) => {
     ui.reset.disabled = !interactive
@@ -79,6 +80,7 @@ export async function startSandboard(ui: InterfaceElements, monitor: BootMonitor
           waveResetInteractive = true
           sound.cancelAll()
           waveReset.start(now, sound.playResetWave())
+          waveResetNeedsTransientClear = true
           clock.reset()
           setToolbarInteractive(false)
         }
@@ -87,12 +89,14 @@ export async function startSandboard(ui: InterfaceElements, monitor: BootMonitor
         const waveState = waveReset.update(now)
         if (waveResetInteractive) {
           clock.reset()
+          if (waveResetNeedsTransientClear) {
+            solver.clearTransientState(encoder)
+            waveResetNeedsTransientClear = false
+          }
+          if (waveState.erase) solver.encodeWaveReset(encoder, waveState)
           if (waveState.justFinished) {
             waveResetInteractive = false
             setToolbarInteractive(true)
-          } else {
-            solver.clearTransientState(encoder)
-            if (waveState.erase) solver.encodeWaveReset(encoder, waveState)
           }
         }
         const count = waveResetInteractive ? 0 : clock.advance(now)

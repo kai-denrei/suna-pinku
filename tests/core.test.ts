@@ -5,6 +5,7 @@ import { FixedClock } from '../src/simulation/clock'
 import { SandCamera } from '../src/render/camera'
 import { StrokeQueue } from '../src/input/strokes'
 import { SAND } from '../src/config'
+import { WaveResetEffect, crestFront, eraseOriginFront, renderEntryFront, renderExitFront } from '../src/reset/effect'
 
 describe('Drawing buffer policy', () => {
   test.each([[3840, 2160, 2], [7680, 4320, 2], [1440, 900, 2], [390, 844, 3]])('caps %s × %s at four million pixels', (width, height, dpr) => {
@@ -139,4 +140,36 @@ test('camera projection and bed picking agree at center and preserve orientation
   expect(center.y).toBeCloseTo(0)
   expect(camera.screenToBed(400, 500, 1600, 1000).x).toBeLessThan(0)
   expect(camera.screenToBed(800, 100, 1600, 1000).y).toBeLessThan(0)
+})
+
+
+describe('Wave reset timing', () => {
+  test('clears the visible entry strip immediately', () => {
+    const wave = new WaveResetEffect()
+    wave.start(1000, 4)
+    const state = wave.update(1000)
+    expect(state.active).toBe(true)
+    expect(state.erase).toBe(true)
+    expect(state.erasePreviousBaseFront).toBe(eraseOriginFront)
+    expect(state.eraseCurrentBaseFront).toBe(renderEntryFront)
+  })
+
+  test('finishes the entire incoming erase even when a frame skips across the crest', () => {
+    const wave = new WaveResetEffect()
+    wave.start(1000, 4)
+    wave.update(1000)
+    const state = wave.update(1000 + 2600)
+    expect(state.incoming).toBe(false)
+    expect(state.erase).toBe(true)
+    expect(state.eraseCurrentBaseFront).toBe(crestFront)
+  })
+
+  test('keeps water visible immediately but exits beyond the near edge at the audio end', () => {
+    const wave = new WaveResetEffect()
+    wave.start(1000, 4)
+    expect(wave.update(1000).currentBaseFront).toBe(renderEntryFront)
+    const finished = wave.update(5000)
+    expect(finished.justFinished).toBe(true)
+    expect(finished.currentBaseFront).toBe(renderExitFront)
+  })
 })

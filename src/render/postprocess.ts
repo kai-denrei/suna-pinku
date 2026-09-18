@@ -186,6 +186,17 @@ fn noise(point: vec2f) -> f32 {
   let t = blend * blend * (3.0 - 2.0 * blend);
   return mix(mix(a, b, t.x), mix(c, d, t.x), t.y);
 }
+fn fbm(point: vec2f) -> f32 {
+  var value = 0.0;
+  var amplitude = 0.5;
+  var position = point;
+  for (var octave = 0; octave < 4; octave++) {
+    value += noise(position) * amplitude;
+    position = position * 2.02 + vec2f(17.0, 9.0);
+    amplitude *= 0.5;
+  }
+  return value;
+}
 fn intersectBed(uv: vec2f) -> vec4f {
   let screen = vec2f(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0);
   let direction = normalize(overlay.forward.xyz + screen.x * overlay.eye.w * overlay.forward.w * overlay.right.xyz + screen.y * overlay.eye.w * overlay.up.xyz);
@@ -193,8 +204,24 @@ fn intersectBed(uv: vec2f) -> vec4f {
   let world = overlay.eye.xyz + direction * distance;
   return vec4f(world.x, world.z, distance, select(0.0, 1.0, distance > 0.0));
 }
+fn waveHeight(point: vec2f, waterDistance: f32, time: f32) -> f32 {
+  let nearShore = 1.0 - smoothstep(0.0, overlay.waveShape.z * 2.2, waterDistance);
+  let swell = sin(point.y * 8.4 - time * 5.1 + point.x * 1.9) * 0.55
+    + sin(point.x * 6.2 + time * 3.2 + point.y * 0.7) * 0.35
+    + sin((point.x + point.y) * 4.5 - time * 2.6) * 0.22;
+  let chop = fbm(point * overlay.waveLook.z * 0.20 + vec2f(time * 0.55, -time * overlay.waveLook.w * 2.6));
+  let shimmer = fbm(point * overlay.waveLook.z * 0.65 + vec2f(-time * 1.4, time * 0.9));
+  return (swell * 0.45 + chop * 0.65 + shimmer * 0.35 - 0.42) * mix(0.005, 0.016, nearShore);
+}
+fn waterNormal(point: vec2f, waterDistance: f32, time: f32) -> vec3f {
+  let epsilon = 0.015;
+  let center = waveHeight(point, waterDistance, time);
+  let dx = waveHeight(point + vec2f(epsilon, 0.0), waterDistance, time) - center;
+  let dy = waveHeight(point + vec2f(0.0, epsilon), waterDistance, time) - center;
+  return normalize(vec3f(-dx / epsilon, 1.0, -dy / epsilon));
+}
 @fragment fn fragment(input: VertexOutput) -> @location(0) vec4f {
-  let source = textureSample(sourceTexture, postSampler, input.uv);
+  let source = textureSampleLevel(sourceTexture, postSampler, input.uv, 0.0);
   if (overlay.waveFront.x <= 0.5) { return source; }
 
   let bed = intersectBed(input.uv);
@@ -205,34 +232,42 @@ fn intersectBed(uv: vec2f) -> vec4f {
   let waterMask = smoothstep(0.0, overlay.waveShape.x, waterDistance);
   if (waterMask <= 0.0001) { return source; }
 
+  let point = vec2f(bed.x, bed.y);
+  let normal = waterNormal(point, waterDistance, overlay.waveFront.z);
   let viewDirection = normalize(overlay.eye.xyz - vec3f(bed.x, ${SAND.depth}, bed.y));
-  let ripplePoint = vec2f(bed.x * overlay.waveLook.z, bed.y * overlay.waveLook.z * 0.58 + overlay.waveFront.z * overlay.waveLook.w * 5.4);
-  let capillary = noise(ripplePoint + vec2f(overlay.waveFront.z * 0.95, 0.0));
-  let comb = sin(ripplePoint.x * 0.92 - overlay.waveFront.z * 4.9)
-    + sin(ripplePoint.y * 1.31 + overlay.waveFront.z * 3.5)
-    + sin((ripplePoint.x + ripplePoint.y) * 0.74 - overlay.waveFront.z * 2.4);
-  let ripple = clamp(capillary * 0.65 + comb * 0.12 + 0.42, 0.0, 1.0);
-  let rippleDx = noise(ripplePoint + vec2f(0.07, 0.0)) - capillary;
-  let rippleDy = noise(ripplePoint + vec2f(0.0, 0.07)) - capillary;
-  let normal = normalize(vec3f(-rippleDx * 1.8, 1.0, -rippleDy * 1.8));
   let light = normalize(vec3f(-0.34, 0.92, 0.18));
-  let fresnel = pow(1.0 - max(dot(viewDirection, normal), 0.0), 3.0);
-  let specular = pow(max(dot(reflect(-light, normal), viewDirection), 0.0), 34.0) * (0.10 + overlay.waveLook.y * 0.40);
+  let nearShore = 1.0 - smoothstep(0.0, overlay.waveShape.z * 2.0, waterDistance);
+  let deepWater = smoothstep(0.0, overlay.waveShape.z * 1.9, waterDistance);
 
-  let depthAmount = clamp(waterDistance / max(overlay.waveShape.z, 1e-5), 0.0, 1.0);
-  let waterColor = mix(vec3f(0.69, 0.86, 0.90), vec3f(0.17, 0.47, 0.63), smoothstep(0.0, 1.0, depthAmount))
-    * (0.95 + ripple * 0.10);
+  let refractOffset = normal.xz * (0.010 + nearShore * 0.012) * waterMask;
+  let refracted = textureSampleLevel(sourceTexture, postSampler, clamp(input.uv + refractOffset, vec2f(0.0), vec2f(1.0)), 0.0);
 
-  let foamBand = smoothstep(overlay.waveShape.y, 0.0, abs(waterDistance)) * (0.55 + capillary * 0.45);
-  let foamTrail = smoothstep(0.0, overlay.waveShape.z * 1.1, waterDistance) * (1.0 - smoothstep(overlay.waveShape.z * 1.1, overlay.waveShape.z * 2.8, waterDistance));
-  let foamNoise = noise(vec2f(bed.x * 7.5 + overlay.waveFront.z * 0.9, bed.y * 5.7 - overlay.waveFront.z * 0.5));
-  let foam = clamp(foamBand + foamTrail * smoothstep(0.46, 0.9, foamNoise) * 0.38, 0.0, 1.0);
+  let fresnel = pow(1.0 - max(dot(viewDirection, normal), 0.0), 3.6);
+  let specular = pow(max(dot(reflect(-light, normal), viewDirection), 0.0), 48.0) * (0.05 + overlay.waveLook.y * 0.22 + nearShore * 0.18);
+
+  let waterColor = mix(vec3f(0.86, 0.95, 0.97), vec3f(0.28, 0.62, 0.74), deepWater);
+  let bodyNoise = fbm(point * 3.0 + vec2f(overlay.waveFront.z * 0.4, -overlay.waveFront.z * 0.3));
+  let bodyBands = sin(point.y * 16.0 - overlay.waveFront.z * 7.0 + point.x * 2.6) * 0.5 + 0.5;
+  let bodyBrightness = 0.92 + bodyNoise * 0.14 + bodyBands * 0.08;
+  let tintedWater = waterColor * bodyBrightness;
+
+  let frontBreakup = (fbm(point * 7.0 + vec2f(overlay.waveFront.z * 0.8, -overlay.waveFront.z * 1.4)) - 0.5) * overlay.waveShape.y * 0.85;
+  let foamDistance = waterDistance + frontBreakup;
+  let foamBand = smoothstep(overlay.waveShape.y * 1.15, 0.0, abs(foamDistance));
+  let foamLaceNoise = fbm(point * 10.5 + vec2f(-overlay.waveFront.z * 1.6, overlay.waveFront.z * 0.6));
+  let foamTongues = smoothstep(0.44, 0.84, foamLaceNoise) * smoothstep(0.0, overlay.waveShape.z * 1.2, waterDistance) * (1.0 - smoothstep(overlay.waveShape.z * 1.2, overlay.waveShape.z * 3.6, waterDistance));
+  let foam = clamp(foamBand * (0.72 + foamLaceNoise * 0.52) + foamTongues * 0.52, 0.0, 1.0);
+
+  let undertowBand = smoothstep(0.0, overlay.waveShape.z * 0.8, waterDistance) * (1.0 - smoothstep(overlay.waveShape.z * 0.8, overlay.waveShape.z * 1.8, waterDistance));
+  let undertow = vec3f(0.07, 0.21, 0.26) * undertowBand * (0.55 + bodyNoise * 0.35);
 
   let tint = overlay.waveShape.w * waterMask;
-  var color = mix(source.rgb, source.rgb * mix(vec3f(0.90, 0.96, 1.0), waterColor, overlay.waveLook.x), tint);
-  color += waterColor * (0.06 + 0.14 * ripple) * tint;
-  color += vec3f(1.0, 1.0, 1.0) * foam * 0.52;
-  color += vec3f(0.93, 0.99, 1.0) * (fresnel * 0.16 + specular);
+  var color = mix(refracted.rgb, refracted.rgb * mix(vec3f(0.96, 0.985, 1.0), tintedWater, overlay.waveLook.x), tint);
+  color += tintedWater * (0.04 + deepWater * 0.09) * tint;
+  color -= undertow * tint;
+  color += vec3f(0.96, 0.99, 1.0) * (fresnel * 0.10 + specular);
+  color = mix(color, vec3f(1.0), foam * 0.56);
+  color += vec3f(0.95, 0.99, 1.0) * foam * 0.10;
   return vec4f(clamp(color, vec3f(0.0), vec3f(1.0)), source.a);
 }
 `

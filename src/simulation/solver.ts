@@ -1,7 +1,6 @@
 import { SAND, type Stroke } from '../config'
 import { checkedShader } from '../platform/shader'
 import type { WaveResetState } from '../reset/effect'
-import { WAVE_RESET } from '../reset/effect'
 import { particleShader, simulationShader } from './shaders'
 import { waveResetShader } from './wave-reset-shader'
 
@@ -45,7 +44,7 @@ export class SandSolver {
     this.particles = device.createBuffer({ label: 'Mass carrying grains', size: this.particleCount * 32, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST })
     this.exchange = device.createBuffer({ label: 'Fixed-point grain exchange', size: resolution * resolution * 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST })
     this.uniforms = Array.from({ length: SAND.maxSteps }, () => device.createBuffer({ size: paramBytes, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST }))
-    this.waveResetUniform = device.createBuffer({ label: 'Wave reset parameters', size: 48, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST })
+    this.waveResetUniform = device.createBuffer({ label: 'Wave reset parameters', size: 32, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST })
   }
   get state() { return this.buffers[this.current] }
   get stateIndex() { return this.current }
@@ -114,25 +113,30 @@ export class SandSolver {
   }
 
   reset() {
-    this.generation++
     this.writeParams(0, [])
     const encoder = this.device.createCommandEncoder()
+    this.encodeFullReset(encoder)
+    this.device.queue.submit([encoder.finish()])
+  }
+
+  encodeFullReset(encoder: GPUCommandEncoder) {
+    this.generation++
     encoder.clearBuffer(this.particles)
     encoder.clearBuffer(this.exchange)
     encoder.clearBuffer(this.impactBudget)
-    const pass = encoder.beginComputePass()
+    const pass = encoder.beginComputePass({ label: 'Full sand reset' })
     pass.setPipeline(this.pipelines.initialize)
-    pass.setBindGroup(0, this.groups[0][1 - this.current])
-    pass.dispatchWorkgroups(Math.ceil(this.resolution / 8), Math.ceil(this.resolution / 8))
+    for (const group of [this.groups[0][0], this.groups[0][1]]) {
+      pass.setBindGroup(0, group)
+      pass.dispatchWorkgroups(Math.ceil(this.resolution / 8), Math.ceil(this.resolution / 8))
+    }
     pass.end()
-    this.device.queue.submit([encoder.finish()])
   }
 
   encodeWaveReset(encoder: GPUCommandEncoder, state: WaveResetState) {
     const data = new Float32Array([
       this.resolution, SAND.extent / this.resolution, SAND.extent, SAND.depth,
-      state.previousBaseFront, state.currentBaseFront, state.time, WAVE_RESET.waterDepth,
-      0, 0, 0, 0,
+      state.erasePreviousBaseFront, state.eraseCurrentBaseFront, state.erasePreviousTime, state.eraseCurrentTime,
     ])
     this.device.queue.writeBuffer(this.waveResetUniform, 0, data)
     const pass = encoder.beginComputePass({ label: 'Wave reset' })
