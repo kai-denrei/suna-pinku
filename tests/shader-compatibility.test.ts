@@ -14,8 +14,17 @@ test.each(shaders)('%s WGSL avoids multi-component swizzle assignment', (_name, 
   expect(shader).not.toMatch(/\.[xyzwrgba]{2,4}\s*(?:[+*/%&|^-]?=(?!=)|\+\+|--)/)
 })
 
-test.each(shaders)('%s WGSL avoids reserved local identifier active', (_name, shader) => {
-  expect(shader).not.toMatch(/\blet\s+active\b/)
+test.each(shaders)('%s WGSL avoids browser-reserved local identifiers', (_name, shader) => {
+  expect(shader).not.toMatch(/\b(?:let|var)\s+(?:active|patch)\b/)
+})
+
+
+test('bed grain search stays bounded to one candidate per 3x3 neighbor cell', () => {
+  const helper = surfaceShader.match(/fn grainAppearance[\s\S]*?(?=struct SandMaterial)/)?.[0]
+  expect(helper).toBeDefined()
+  expect(helper).toContain('for (var row = -1; row <= 1; row++)')
+  expect(helper).toContain('for (var column = -1; column <= 1; column++)')
+  expect(helper).not.toMatch(/for \(var slot/)
 })
 
 test('reflective glint helper keeps derivatives in uniform fragment control flow', () => {
