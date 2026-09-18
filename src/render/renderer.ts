@@ -1,5 +1,7 @@
 import { SAND, type Stroke } from '../config'
 import { checkedShader } from '../platform/shader'
+import type { WaveResetState } from '../reset/effect'
+import { idleWaveResetState } from '../reset/effect'
 import type { SandSolver } from '../simulation/solver'
 import { AirborneShadow } from './airborne-shadow'
 import { SandCamera } from './camera'
@@ -102,7 +104,7 @@ export class SandRenderer {
     this.shadow.resize(width, height, (x, y) => this.camera.screenToBed(x, y, width, height))
   }
 
-  encode(encoder: GPUCommandEncoder, target: GPUTextureView, pointer: Stroke, now: number, showPointer = false) {
+  encode(encoder: GPUCommandEncoder, target: GPUTextureView, pointer: Stroke, now: number, showPointer = false, waveState: WaveResetState = idleWaveResetState()) {
     if (!this.depth) throw new Error('Renderer needs a nonzero drawing buffer')
     this.shadow.encode(encoder, now)
     this.data.set([
@@ -133,6 +135,7 @@ export class SandRenderer {
     pass.setBindGroup(0, this.grainGroup)
     pass.draw(6, this.solver.particleCount)
     pass.end()
+    this.post.setWaveState(waveState, this.camera)
     this.post.encode(encoder, target)
   }
 

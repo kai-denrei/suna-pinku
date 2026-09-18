@@ -1,6 +1,9 @@
 import { SAND, type Stroke } from '../config'
 import { checkedShader } from '../platform/shader'
+import type { WaveResetState } from '../reset/effect'
+import { WAVE_RESET } from '../reset/effect'
 import { particleShader, simulationShader } from './shaders'
+import { waveResetShader } from './wave-reset-shader'
 
 const paramVectors = 3 + SAND.maxContacts * 3
 const paramBytes = paramVectors * 16
@@ -17,6 +20,9 @@ export class SandSolver {
   private particlePipeline!: GPUComputePipeline
   private particleGroups: GPUBindGroup[][] = []
   private readonly uniforms: GPUBuffer[]
+  private readonly waveResetUniform: GPUBuffer
+  private waveResetPipeline!: GPUComputePipeline
+  private waveResetGroups: GPUBindGroup[] = []
   private pipelines!: Record<'initialize' | 'contact' | 'transport' | 'integrate', GPUComputePipeline>
   private groups: GPUBindGroup[][] = []
   private current = 0
@@ -39,6 +45,7 @@ export class SandSolver {
     this.particles = device.createBuffer({ label: 'Mass carrying grains', size: this.particleCount * 32, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST })
     this.exchange = device.createBuffer({ label: 'Fixed-point grain exchange', size: resolution * resolution * 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST })
     this.uniforms = Array.from({ length: SAND.maxSteps }, () => device.createBuffer({ size: paramBytes, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST }))
+    this.waveResetUniform = device.createBuffer({ label: 'Wave reset parameters', size: 48, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST })
   }
   get state() { return this.buffers[this.current] }
   get stateIndex() { return this.current }
@@ -75,6 +82,16 @@ export class SandSolver {
       { binding: 4, resource: { buffer: this.exchange } }, { binding: 5, resource: { buffer: this.contact } },
       { binding: 6, resource: { buffer: this.contactPressure } }, { binding: 7, resource: { buffer: this.impactBudget } },
     ] })))
+
+    const resetModule = await checkedShader(this.device, 'Wave reset WGSL', waveResetShader)
+    this.waveResetPipeline = await this.device.createComputePipelineAsync({ layout: 'auto', compute: { module: resetModule, entryPoint: 'main' } })
+    this.waveResetGroups = this.buffers.map((buffer) => this.device.createBindGroup({
+      layout: this.waveResetPipeline.getBindGroupLayout(0),
+      entries: [
+        { binding: 0, resource: { buffer: this.waveResetUniform } },
+        { binding: 1, resource: { buffer } },
+      ],
+    }))
     this.reset()
   }
 
@@ -111,6 +128,33 @@ export class SandSolver {
     this.device.queue.submit([encoder.finish()])
   }
 
+  encodeWaveReset(encoder: GPUCommandEncoder, state: WaveResetState) {
+    const data = new Float32Array([
+      this.resolution, SAND.extent / this.resolution, SAND.extent, SAND.depth,
+      state.previousBaseFront, state.currentBaseFront, state.time, WAVE_RESET.waterDepth,
+      0, 0, 0, 0,
+    ])
+    this.device.queue.writeBuffer(this.waveResetUniform, 0, data)
+    const pass = encoder.beginComputePass({ label: 'Wave reset' })
+    pass.setPipeline(this.waveResetPipeline)
+    for (const group of this.waveResetGroups) {
+      pass.setBindGroup(0, group)
+      pass.dispatchWorkgroups(Math.ceil(this.resolution / 8), Math.ceil(this.resolution / 8))
+    }
+    pass.end()
+    this.generation++
+  }
+
+  clearTransientState(encoder: GPUCommandEncoder) {
+    // Contact fields do not need clearing while the simulation is paused: a
+    // zero contact count gates reads, and the next active contact pass rewrites
+    // the full fields. Avoiding those clears saves several MB of GPU traffic per
+    // reset frame and keeps STORAGE-only buffers out of clearBuffer().
+    encoder.clearBuffer(this.particles)
+    encoder.clearBuffer(this.exchange)
+    encoder.clearBuffer(this.impactBudget)
+  }
+
   encode(encoder: GPUCommandEncoder, steps: readonly (readonly Stroke[])[]) {
     if (steps.length > SAND.maxSteps) throw new Error('Simulation substep budget exceeded')
     steps.forEach((strokes, slot) => {
@@ -135,5 +179,5 @@ export class SandSolver {
     })
   }
 
-  dispose() { [...this.buffers, this.flux, this.particles, this.exchange, this.contact, this.contactPressure, this.impactBudget, ...this.uniforms].forEach((buffer) => buffer.destroy()) }
+  dispose() { [...this.buffers, this.flux, this.particles, this.exchange, this.contact, this.contactPressure, this.impactBudget, ...this.uniforms, this.waveResetUniform].forEach((buffer) => buffer.destroy()) }
 }

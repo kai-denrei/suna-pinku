@@ -77,16 +77,24 @@ button:focus-visible, input:focus-visible, canvas:focus-visible { outline: 2px s
 .toolbar label { display: flex; align-items: center; gap: 12px; font-size: 11px; min-width: 0; }
 .toolbar input { width: 78px; accent-color: #6b614b; cursor: pointer; touch-action: manipulation; }
 .toolbar button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   border: 0;
-  background: transparent;
-  min-height: 28px;
-  padding: 4px 0;
+  border-radius: 999px;
+  background: #ffffff52;
+  min-height: 34px;
+  padding: 7px 14px;
   font-size: 11px;
   cursor: pointer;
-  transition: opacity .2s;
+  transition: opacity .2s, background-color .2s, color .2s;
   touch-action: manipulation;
 }
-.toolbar button:hover { opacity: .55; }
+.toolbar button:hover { opacity: .78; }
+.toolbar button:disabled {
+  opacity: .42;
+  cursor: default;
+}
 .divider { height: 18px; width: 1px; flex: 0 0 1px; background: #52473025; }
 .overlay { position: fixed; inset: 0; background: #e2d3b9; display: grid; place-items: center; z-index: 5; padding: 28px; transition: opacity .65s; }
 .overlay.ready { opacity: 0; pointer-events: none; }

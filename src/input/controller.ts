@@ -11,6 +11,7 @@ export class InputController {
   private readonly pointers = new Set<number>()
   private readonly controller = new AbortController()
   private keyboardDrawing = false
+  private interactive = true
 
   constructor(ui: InterfaceElements, camera: SandCamera, sound: SandSound, reset: () => void) {
     const { signal } = this.controller
@@ -21,6 +22,7 @@ export class InputController {
     }
     const pressure = (event: PointerEvent) => event.pointerType === 'pen' ? event.pressure : 0.75
     canvas.addEventListener('pointerdown', (event) => {
+      if (!this.interactive) return
       if (event.pointerType === 'mouse' && event.button !== 0) return
       if (this.pointers.has(event.pointerId)) return
       this.pointers.add(event.pointerId)
@@ -31,6 +33,7 @@ export class InputController {
       this.showPointer = false
     }, { signal })
     canvas.addEventListener('pointermove', (event) => {
+      if (!this.interactive) return
       const samples = event.getCoalescedEvents?.() ?? []
       for (const sample of samples.length ? samples : [event]) {
         this.strokes.move(position(sample), pressure(sample), sample.timeStamp, event.pointerId)
@@ -38,6 +41,7 @@ export class InputController {
       }
     }, { signal })
     canvas.addEventListener('pointerup', (event) => {
+      if (!this.interactive && !this.pointers.has(event.pointerId)) return
       if (!this.pointers.has(event.pointerId)) return
       this.strokes.move(position(event), pressure(event), event.timeStamp, event.pointerId)
       sound.movePointer(event)
@@ -62,9 +66,10 @@ export class InputController {
     window.addEventListener('blur', cancelAll, { signal })
     document.addEventListener('visibilitychange', () => { if (document.hidden) cancelAll() }, { signal })
     ui.radius.addEventListener('input', () => { this.strokes.radius = Number(ui.radius.value) / 1000; this.showPointer = true }, { signal })
-    ui.reset.addEventListener('click', () => { cancelAll(); reset() }, { signal })
+    ui.reset.addEventListener('click', () => { if (!this.interactive) return; cancelAll(); reset() }, { signal })
     canvas.addEventListener('keydown', (event) => {
-      if (event.key.toLowerCase() === 'r') { cancelAll(); reset() }
+      if (event.key.toLowerCase() === 'r') { if (!this.interactive) return; cancelAll(); reset() }
+      if (!this.interactive) return
       if (event.code === 'Space') {
         event.preventDefault()
         if (!this.keyboardDrawing) { this.strokes.begin(this.strokes.position, 0.75, event.timeStamp, keyboardPointerId); this.keyboardDrawing = true }
@@ -86,5 +91,17 @@ export class InputController {
       if (event.code === 'Space') { this.strokes.end(keyboardPointerId); this.keyboardDrawing = false }
     }, { signal })
   }
+
+  setInteractive(interactive: boolean) {
+    if (this.interactive === interactive) return
+    this.interactive = interactive
+    if (!interactive) {
+      this.pointers.clear()
+      this.keyboardDrawing = false
+      this.showPointer = false
+      this.strokes.cancel()
+    }
+  }
+
   dispose() { this.controller.abort(); this.strokes.cancel() }
 }

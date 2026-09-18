@@ -18,6 +18,7 @@ type NavigatorWithAudioSession = Navigator & {
 }
 
 const ambientVolume = 0.08
+const waveVolume = 0.92
 const proceduralVolume = 0.34
 const minimumSampleMilliseconds = 1
 const motionHoldMilliseconds = 55
@@ -48,14 +49,19 @@ function requestPlaybackAudioSession() {
 
 export class SandSound {
   private readonly ambient = new Audio('/scene_assets/beach.mp3')
+  private readonly wave = new Audio('/scene_assets/wave.mp3')
   private readonly gestures = new Map<number, GestureTrack>()
   private readonly unlockController = new AbortController()
   private context: AudioContext | undefined
   private ambientSource: MediaElementAudioSourceNode | undefined
   private ambientGain: GainNode | undefined
+  private waveSource: MediaElementAudioSourceNode | undefined
+  private waveGain: GainNode | undefined
   private sandNode: AudioWorkletNode | undefined
   private proceduralReady: Promise<void> | undefined
   private prepareReady: Promise<void> | undefined
+  private readonly waveMetadataReady: Promise<void>
+  private waveDuration = 4.754
   private disposed = false
 
   constructor() {
@@ -67,6 +73,11 @@ export class SandSound {
     this.ambient.volume = 1
     this.ambient.setAttribute('playsinline', '')
 
+    this.wave.preload = 'auto'
+    this.wave.volume = 1
+    this.wave.setAttribute('playsinline', '')
+    this.waveMetadataReady = this.loadWaveMetadata()
+
     const unlock = () => { this.activatePlayback() }
     const { signal } = this.unlockController
     window.addEventListener('pointerdown', unlock, { signal, passive: true })
@@ -75,7 +86,7 @@ export class SandSound {
 
   prepare() {
     if (this.prepareReady) return this.prepareReady
-    this.prepareReady = this.prepareAudio()
+    this.prepareReady = Promise.all([this.prepareAudio(), this.waveMetadataReady]).then(() => undefined)
     return this.prepareReady
   }
 
@@ -159,11 +170,19 @@ export class SandSound {
     this.ambientSource = undefined
     this.ambientGain?.disconnect()
     this.ambientGain = undefined
+    this.waveSource?.disconnect()
+    this.waveSource = undefined
+    this.waveGain?.disconnect()
+    this.waveGain = undefined
     if (this.context) void this.context.close()
     this.context = undefined
     this.ambient.pause()
+    this.wave.pause()
+    this.wave.currentTime = 0
     this.ambient.removeAttribute('src')
+    this.wave.removeAttribute('src')
     this.ambient.load()
+    this.wave.load()
   }
 
   private async prepareAudio() {
@@ -203,10 +222,46 @@ export class SandSound {
     const ambientGain = new GainNode(context, { gain: ambientVolume })
     ambientSource.connect(ambientGain).connect(context.destination)
 
+    const waveSource = context.createMediaElementSource(this.wave)
+    const waveGain = new GainNode(context, { gain: waveVolume })
+    waveSource.connect(waveGain).connect(context.destination)
+
     this.context = context
     this.ambientSource = ambientSource
     this.ambientGain = ambientGain
+    this.waveSource = waveSource
+    this.waveGain = waveGain
     return context
+  }
+
+  get resetDurationSeconds() { return this.waveDuration }
+
+  playResetWave() {
+    if (this.disposed) return this.waveDuration
+    this.activatePlayback()
+    this.wave.pause()
+    try { this.wave.currentTime = 0 } catch {
+      // Some browsers throw while the media pipeline is still attaching.
+    }
+    void this.wave.play().catch(() => undefined)
+    return this.waveDuration
+  }
+
+  private loadWaveMetadata() {
+    return new Promise<void>((resolve) => {
+      const finalize = () => {
+        const duration = this.wave.duration
+        if (Number.isFinite(duration) && duration > 0) this.waveDuration = duration
+        resolve()
+      }
+      if (this.wave.readyState >= HTMLMediaElement.HAVE_METADATA) {
+        finalize()
+        return
+      }
+      this.wave.addEventListener('loadedmetadata', finalize, { once: true })
+      this.wave.addEventListener('error', () => resolve(), { once: true })
+      this.wave.load()
+    })
   }
 
   private async playAmbient() {

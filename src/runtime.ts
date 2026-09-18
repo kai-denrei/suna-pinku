@@ -3,6 +3,7 @@ import { SAND, idleStroke } from './config'
 import { InputController } from './input/controller'
 import type { BootMonitor } from './platform/boot'
 import { createGpu } from './platform/gpu'
+import { WaveResetEffect } from './reset/effect'
 import { useMobileGrainFiltering } from './platform/mobile'
 import { drawingBuffer } from './platform/viewport'
 import { SandRenderer } from './render/renderer'
@@ -24,6 +25,14 @@ export async function startSandboard(ui: InterfaceElements, monitor: BootMonitor
   let inFlight = false
   let resizePending = true
   let resetPending = false
+  let waveResetInteractive = false
+  const waveReset = new WaveResetEffect()
+  const setToolbarInteractive = (interactive: boolean) => {
+    ui.reset.disabled = !interactive
+    ui.radius.disabled = !interactive
+    input?.setInteractive(interactive)
+  }
+
   const stop = () => {
     if (stopped) return
     stopped = true
@@ -57,6 +66,7 @@ export async function startSandboard(ui: InterfaceElements, monitor: BootMonitor
     monitor.assertHealthy()
     await soundReady
     input = new InputController(ui, renderer.camera, sound, () => { resetPending = true })
+    setToolbarInteractive(true)
     const frame = (now: number) => {
       if (stopped) return
       animation = requestAnimationFrame(frame)
@@ -64,12 +74,30 @@ export async function startSandboard(ui: InterfaceElements, monitor: BootMonitor
       if (document.hidden || inFlight) { clock.reset(); return }
       try {
         resize()
-        if (resetPending) { solver.reset(); clock.reset(); resetPending = false }
-        const count = clock.advance(now)
+        if (resetPending && !waveResetInteractive) {
+          resetPending = false
+          waveResetInteractive = true
+          sound.cancelAll()
+          waveReset.start(now, sound.playResetWave())
+          clock.reset()
+          setToolbarInteractive(false)
+        }
         const encoder = gpu.device.createCommandEncoder()
         const activeInput = input!
-        solver.encode(encoder, Array.from({ length: count }, () => activeInput.strokes.nextBatch()))
-        renderer.encode(encoder, gpu.context.getCurrentTexture().createView(), activeInput.strokes.cursor, now, activeInput.showPointer)
+        const waveState = waveReset.update(now)
+        if (waveResetInteractive) {
+          clock.reset()
+          if (waveState.justFinished) {
+            waveResetInteractive = false
+            setToolbarInteractive(true)
+          } else {
+            solver.clearTransientState(encoder)
+            if (waveState.erase) solver.encodeWaveReset(encoder, waveState)
+          }
+        }
+        const count = waveResetInteractive ? 0 : clock.advance(now)
+        if (count > 0) solver.encode(encoder, Array.from({ length: count }, () => activeInput.strokes.nextBatch()))
+        renderer.encode(encoder, gpu.context.getCurrentTexture().createView(), activeInput.strokes.cursor, now, activeInput.showPointer, waveState)
         gpu.device.queue.submit([encoder.finish()])
         inFlight = true
         void gpu.device.queue.onSubmittedWorkDone().then(() => { inFlight = false }).catch((error: unknown) => monitor.fail(error))

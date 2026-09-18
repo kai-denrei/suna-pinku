@@ -1,3 +1,9 @@
+import { SAND } from '../config'
+import type { SandCamera } from './camera'
+import type { WaveResetState } from '../reset/effect'
+import { WAVE_RESET } from '../reset/effect'
+import { waveShoreWgsl } from '../reset/wgsl'
+
 const legacyEncodeShader = `
 @group(0) @binding(0) var sourceTexture: texture_2d<f32>;
 struct VertexOutput { @builtin(position) clip: vec4f }
@@ -130,8 +136,6 @@ fn filmicGrade(color: vec3f, uv: vec2f) -> vec3f {
   let star = crossTight + diagonal * 0.55;
   let smear = crossSoft * 0.56 + diagonal * 0.48;
 
-  // Shape the glint as a softer optical reflection: a hot center, short
-  // streak-like structure, and a broader smeared glow rather than a hard dot.
   let coreMask = smoothstep(0.010, 0.038, glintCenter);
   let streakMask = smoothstep(0.010, 0.080, star + glintCenter * 0.18);
   let smearMask = smoothstep(0.008, 0.070, smear + glintCenter * 0.22);
@@ -146,24 +150,117 @@ fn filmicGrade(color: vec3f, uv: vec2f) -> vec3f {
 }
 `
 
+const overlayShader = `
+${waveShoreWgsl}
+struct OverlayView {
+  eye: vec4f,
+  forward: vec4f,
+  right: vec4f,
+  up: vec4f,
+  waveFront: vec4f,
+  waveShape: vec4f,
+  waveLook: vec4f,
+}
+@group(0) @binding(0) var postSampler: sampler;
+@group(0) @binding(1) var sourceTexture: texture_2d<f32>;
+@group(0) @binding(2) var<uniform> overlay: OverlayView;
+struct VertexOutput { @builtin(position) clip: vec4f, @location(0) uv: vec2f }
+@vertex fn vertex(@builtin(vertex_index) index: u32) -> VertexOutput {
+  let positions = array<vec2f, 3>(vec2f(-1.0, -1.0), vec2f(3.0, -1.0), vec2f(-1.0, 3.0));
+  let clip = positions[index];
+  var output: VertexOutput;
+  output.clip = vec4f(clip, 0.0, 1.0);
+  output.uv = clip * vec2f(0.5, -0.5) + vec2f(0.5);
+  return output;
+}
+fn hash(point: vec2f) -> f32 {
+  return fract(sin(dot(point, vec2f(127.1, 311.7))) * 43758.5453);
+}
+fn noise(point: vec2f) -> f32 {
+  let cell = floor(point);
+  let blend = fract(point);
+  let a = hash(cell);
+  let b = hash(cell + vec2f(1.0, 0.0));
+  let c = hash(cell + vec2f(0.0, 1.0));
+  let d = hash(cell + vec2f(1.0, 1.0));
+  let t = blend * blend * (3.0 - 2.0 * blend);
+  return mix(mix(a, b, t.x), mix(c, d, t.x), t.y);
+}
+fn intersectBed(uv: vec2f) -> vec4f {
+  let screen = vec2f(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0);
+  let direction = normalize(overlay.forward.xyz + screen.x * overlay.eye.w * overlay.forward.w * overlay.right.xyz + screen.y * overlay.eye.w * overlay.up.xyz);
+  let distance = (${SAND.depth} - overlay.eye.y) / direction.y;
+  let world = overlay.eye.xyz + direction * distance;
+  return vec4f(world.x, world.z, distance, select(0.0, 1.0, distance > 0.0));
+}
+@fragment fn fragment(input: VertexOutput) -> @location(0) vec4f {
+  let source = textureSample(sourceTexture, postSampler, input.uv);
+  if (overlay.waveFront.x <= 0.5) { return source; }
+
+  let bed = intersectBed(input.uv);
+  if (bed.w < 0.5 || abs(bed.x) > overlay.waveFront.w || abs(bed.y) > overlay.waveFront.w) { return source; }
+
+  let shoreline = shorelineFront(bed.x, overlay.waveFront.y, overlay.waveFront.z);
+  let waterDistance = bed.y - shoreline;
+  let waterMask = smoothstep(0.0, overlay.waveShape.x, waterDistance);
+  if (waterMask <= 0.0001) { return source; }
+
+  let viewDirection = normalize(overlay.eye.xyz - vec3f(bed.x, ${SAND.depth}, bed.y));
+  let ripplePoint = vec2f(bed.x * overlay.waveLook.z, bed.y * overlay.waveLook.z * 0.58 + overlay.waveFront.z * overlay.waveLook.w * 5.4);
+  let capillary = noise(ripplePoint + vec2f(overlay.waveFront.z * 0.95, 0.0));
+  let comb = sin(ripplePoint.x * 0.92 - overlay.waveFront.z * 4.9)
+    + sin(ripplePoint.y * 1.31 + overlay.waveFront.z * 3.5)
+    + sin((ripplePoint.x + ripplePoint.y) * 0.74 - overlay.waveFront.z * 2.4);
+  let ripple = clamp(capillary * 0.65 + comb * 0.12 + 0.42, 0.0, 1.0);
+  let rippleDx = noise(ripplePoint + vec2f(0.07, 0.0)) - capillary;
+  let rippleDy = noise(ripplePoint + vec2f(0.0, 0.07)) - capillary;
+  let normal = normalize(vec3f(-rippleDx * 1.8, 1.0, -rippleDy * 1.8));
+  let light = normalize(vec3f(-0.34, 0.92, 0.18));
+  let fresnel = pow(1.0 - max(dot(viewDirection, normal), 0.0), 3.0);
+  let specular = pow(max(dot(reflect(-light, normal), viewDirection), 0.0), 34.0) * (0.10 + overlay.waveLook.y * 0.40);
+
+  let depthAmount = clamp(waterDistance / max(overlay.waveShape.z, 1e-5), 0.0, 1.0);
+  let waterColor = mix(vec3f(0.69, 0.86, 0.90), vec3f(0.17, 0.47, 0.63), smoothstep(0.0, 1.0, depthAmount))
+    * (0.95 + ripple * 0.10);
+
+  let foamBand = smoothstep(overlay.waveShape.y, 0.0, abs(waterDistance)) * (0.55 + capillary * 0.45);
+  let foamTrail = smoothstep(0.0, overlay.waveShape.z * 1.1, waterDistance) * (1.0 - smoothstep(overlay.waveShape.z * 1.1, overlay.waveShape.z * 2.8, waterDistance));
+  let foamNoise = noise(vec2f(bed.x * 7.5 + overlay.waveFront.z * 0.9, bed.y * 5.7 - overlay.waveFront.z * 0.5));
+  let foam = clamp(foamBand + foamTrail * smoothstep(0.46, 0.9, foamNoise) * 0.38, 0.0, 1.0);
+
+  let tint = overlay.waveShape.w * waterMask;
+  var color = mix(source.rgb, source.rgb * mix(vec3f(0.90, 0.96, 1.0), waterColor, overlay.waveLook.x), tint);
+  color += waterColor * (0.06 + 0.14 * ripple) * tint;
+  color += vec3f(1.0, 1.0, 1.0) * foam * 0.52;
+  color += vec3f(0.93, 0.99, 1.0) * (fresnel * 0.16 + specular);
+  return vec4f(clamp(color, vec3f(0.0), vec3f(1.0)), source.a);
+}
+`
+
 export const HDR_SCENE_FORMAT: GPUTextureFormat = 'rgba16float'
 export const GLINT_FORMAT: GPUTextureFormat = 'r16float'
 
 export class SandPostProcess {
   private readonly uniform: GPUBuffer
+  private readonly overlayUniform: GPUBuffer
   private readonly sampler: GPUSampler
   private readonly legacyEncodeModule: GPUShaderModule
   private readonly postModule: GPUShaderModule
+  private readonly overlayModule: GPUShaderModule
   private legacyEncodePipeline!: GPURenderPipeline
   private postPipeline!: GPURenderPipeline
+  private overlayPipeline!: GPURenderPipeline
   private legacyEncodeGroup!: GPUBindGroup
   private postGroup!: GPUBindGroup
+  private overlayGroup!: GPUBindGroup
   private hdrScene?: GPUTexture
   private hdrSceneView?: GPUTextureView
   private glintScene?: GPUTexture
   private glintSceneView?: GPUTextureView
   private legacyScene?: GPUTexture
   private legacySceneView?: GPUTextureView
+  private compositeScene?: GPUTexture
+  private compositeSceneView?: GPUTextureView
   private width = 0
   private height = 0
 
@@ -176,13 +273,15 @@ export class SandPostProcess {
     this.legacyFormat = legacyFormat
     this.targetFormat = targetFormat
     this.uniform = device.createBuffer({ label: 'Filmic post uniform', size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST })
+    this.overlayUniform = device.createBuffer({ label: 'Wave overlay uniform', size: 112, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST })
     this.sampler = device.createSampler({ label: 'Filmic post sampler', magFilter: 'linear', minFilter: 'linear', mipmapFilter: 'linear', addressModeU: 'clamp-to-edge', addressModeV: 'clamp-to-edge' })
     this.legacyEncodeModule = device.createShaderModule({ label: 'Legacy display encode WGSL', code: legacyEncodeShader })
     this.postModule = device.createShaderModule({ label: 'Filmic post WGSL', code: postShader })
+    this.overlayModule = device.createShaderModule({ label: 'Wave overlay WGSL', code: overlayShader })
   }
 
   async initialize() {
-    [this.legacyEncodePipeline, this.postPipeline] = await Promise.all([
+    [this.legacyEncodePipeline, this.postPipeline, this.overlayPipeline] = await Promise.all([
       this.device.createRenderPipelineAsync({ label: 'Legacy display encode', layout: 'auto',
         vertex: { module: this.legacyEncodeModule, entryPoint: 'vertex' },
         fragment: { module: this.legacyEncodeModule, entryPoint: 'fragment', targets: [{ format: this.legacyFormat }] },
@@ -193,6 +292,11 @@ export class SandPostProcess {
         fragment: { module: this.postModule, entryPoint: 'fragment', targets: [{ format: this.targetFormat }] },
         primitive: { topology: 'triangle-list' },
       }),
+      this.device.createRenderPipelineAsync({ label: 'Wave overlay composite', layout: 'auto',
+        vertex: { module: this.overlayModule, entryPoint: 'vertex' },
+        fragment: { module: this.overlayModule, entryPoint: 'fragment', targets: [{ format: this.targetFormat }] },
+        primitive: { topology: 'triangle-list' },
+      }),
     ])
   }
 
@@ -201,6 +305,7 @@ export class SandPostProcess {
     this.hdrScene?.destroy()
     this.glintScene?.destroy()
     this.legacyScene?.destroy()
+    this.compositeScene?.destroy()
     this.width = width
     this.height = height
     this.hdrScene = this.device.createTexture({ label: 'Linear HDR scene color', size: [width, height], format: HDR_SCENE_FORMAT, usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING })
@@ -209,6 +314,8 @@ export class SandPostProcess {
     this.glintSceneView = this.glintScene.createView()
     this.legacyScene = this.device.createTexture({ label: 'Legacy display scene color', size: [width, height], format: this.legacyFormat, usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING })
     this.legacySceneView = this.legacyScene.createView()
+    this.compositeScene = this.device.createTexture({ label: 'Filmic composite scene color', size: [width, height], format: this.targetFormat, usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING })
+    this.compositeSceneView = this.compositeScene.createView()
     this.legacyEncodeGroup = this.device.createBindGroup({ layout: this.legacyEncodePipeline.getBindGroupLayout(0), entries: [
       { binding: 0, resource: this.hdrSceneView },
     ] })
@@ -218,7 +325,25 @@ export class SandPostProcess {
       { binding: 2, resource: { buffer: this.uniform } },
       { binding: 3, resource: this.glintSceneView },
     ] })
+    this.overlayGroup = this.device.createBindGroup({ layout: this.overlayPipeline.getBindGroupLayout(0), entries: [
+      { binding: 0, resource: this.sampler },
+      { binding: 1, resource: this.compositeSceneView },
+      { binding: 2, resource: { buffer: this.overlayUniform } },
+    ] })
     this.device.queue.writeBuffer(this.uniform, 0, new Float32Array([1 / width, 1 / height, width, height]))
+  }
+
+  setWaveState(waveState: WaveResetState, camera: SandCamera) {
+    const data = new Float32Array([
+      ...camera.eye, camera.tanHalfFov,
+      ...camera.forward, camera.aspect,
+      ...camera.right, 0,
+      ...camera.up, 0,
+      waveState.active ? 1 : 0, waveState.currentBaseFront, waveState.time, SAND.extent * 0.5,
+      WAVE_RESET.shorelineFeather, WAVE_RESET.foamWidth, WAVE_RESET.foamTrail, WAVE_RESET.waterOpacity,
+      WAVE_RESET.waterTintStrength, WAVE_RESET.washGloss, WAVE_RESET.rippleScale, WAVE_RESET.rippleDrift,
+    ])
+    this.device.queue.writeBuffer(this.overlayUniform, 0, data)
   }
 
   get target() {
@@ -232,19 +357,32 @@ export class SandPostProcess {
   }
 
   encode(encoder: GPUCommandEncoder, target: GPUTextureView) {
-    if (!this.legacySceneView) throw new Error('Post process textures are not initialized.')
+    if (!this.legacySceneView || !this.compositeSceneView) throw new Error('Post process textures are not initialized.')
     const encodePass = encoder.beginRenderPass({ label: 'Legacy display encode', colorAttachments: [{ view: this.legacySceneView, loadOp: 'clear', storeOp: 'store', clearValue: { r: 0.55, g: 0.44, b: 0.29, a: 1 } }] })
     encodePass.setPipeline(this.legacyEncodePipeline)
     encodePass.setBindGroup(0, this.legacyEncodeGroup)
     encodePass.draw(3)
     encodePass.end()
 
-    const postPass = encoder.beginRenderPass({ label: 'Filmic composite', colorAttachments: [{ view: target, clearValue: { r: 0.55, g: 0.44, b: 0.29, a: 1 }, loadOp: 'clear', storeOp: 'store' }] })
+    const postPass = encoder.beginRenderPass({ label: 'Filmic composite', colorAttachments: [{ view: this.compositeSceneView, clearValue: { r: 0.55, g: 0.44, b: 0.29, a: 1 }, loadOp: 'clear', storeOp: 'store' }] })
     postPass.setPipeline(this.postPipeline)
     postPass.setBindGroup(0, this.postGroup)
     postPass.draw(3)
     postPass.end()
+
+    const overlayPass = encoder.beginRenderPass({ label: 'Wave overlay composite', colorAttachments: [{ view: target, clearValue: { r: 0.55, g: 0.44, b: 0.29, a: 1 }, loadOp: 'clear', storeOp: 'store' }] })
+    overlayPass.setPipeline(this.overlayPipeline)
+    overlayPass.setBindGroup(0, this.overlayGroup)
+    overlayPass.draw(3)
+    overlayPass.end()
   }
 
-  dispose() { this.hdrScene?.destroy(); this.glintScene?.destroy(); this.legacyScene?.destroy(); this.uniform.destroy() }
+  dispose() {
+    this.hdrScene?.destroy()
+    this.glintScene?.destroy()
+    this.legacyScene?.destroy()
+    this.compositeScene?.destroy()
+    this.uniform.destroy()
+    this.overlayUniform.destroy()
+  }
 }
