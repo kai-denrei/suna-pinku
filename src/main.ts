@@ -10,3 +10,6 @@ void monitor.run(async () => {
   const { startSandboard } = await import('./runtime')
   await startSandboard(ui, monitor)
 })
+
+import { registerOffline } from './platform/pwa'
+registerOffline()

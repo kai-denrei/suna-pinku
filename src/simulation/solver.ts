@@ -5,7 +5,7 @@ import { WAVE_RESET } from '../reset/effect'
 import { particleShader, simulationShader } from './shaders'
 import { waveResetShader } from './wave-reset-shader'
 
-const paramVectors = 3 + SAND.maxContacts * 3
+const paramVectors = 4 + SAND.maxContacts * 3
 const paramBytes = paramVectors * 16
 
 export class SandSolver {
@@ -27,6 +27,8 @@ export class SandSolver {
   private groups: GPUBindGroup[][] = []
   private current = 0
   private generation = 0
+  private shakeAmplitude = 0
+  private shakeTime = 0
   private readonly data = new Float32Array(paramVectors * 4)
   readonly byteLength: number
 
@@ -109,11 +111,24 @@ export class SandSolver {
       this.data.set([stroke.to.x, stroke.to.y, 0, 0], offset + 4)
       this.data.set([stroke.velocity.x, stroke.velocity.y, Math.hypot(stroke.velocity.x, stroke.velocity.y), 0], offset + 8)
     })
+    const amplitude = this.shakeAmplitude * Math.exp(-this.shakeTime * 5)
+    this.data.set([Math.cos(this.shakeTime * 38) * amplitude * 6,
+      Math.sin(this.shakeTime * 31) * amplitude * 6, amplitude, 0], 12 + SAND.maxContacts * 12)
+    this.shakeTime += SAND.step
     this.device.queue.writeBuffer(this.uniforms[slot], 0, this.data)
     return active.length
   }
 
+  shake(strength: number) {
+    if (!Number.isFinite(strength)) return
+    this.shakeAmplitude = Math.min(1, Math.max(0, strength))
+    this.shakeTime = 0
+  }
+
+  cancelShake() { this.shakeAmplitude = 0 }
+
   reset() {
+    this.cancelShake()
     this.writeParams(0, [])
     const encoder = this.device.createCommandEncoder()
     this.encodeFullReset(encoder)

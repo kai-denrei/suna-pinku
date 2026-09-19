@@ -32,7 +32,7 @@ export class BootMonitor {
     this.ui.overlay.classList.add('failed')
     this.ui.overlay.removeAttribute('aria-hidden')
     this.ui.title.textContent = 'The sand could not continue.'
-    this.ui.status.textContent = 'Sandboard requires a current browser and hardware-accelerated WebGPU. No lower-quality renderer has been substituted.'
+    this.ui.status.textContent = 'Your pink sandbox needs a browser with WebGPU, such as Safari on iOS 26 or a current Chrome.'
     this.ui.diagnostics.hidden = false
     this.ui.diagnostics.textContent = [
       `Stage: ${this.currentStage}`, `Error: ${error.message}`,
@@ -41,6 +41,6 @@ export class BootMonitor {
       `Adapter: ${this.adapter}`, `Platform: ${navigator.userAgent}`,
     ].join('\n')
     this.ui.reload.hidden = false
-    console.error(`[Sandboard: ${this.currentStage}]`, error)
+    console.error(`[Suna Pinku: ${this.currentStage}]`, error)
   }
 }

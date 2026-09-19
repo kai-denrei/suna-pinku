@@ -12,6 +12,7 @@ struct Params {
   physics: vec4f,
   tool: vec4f,
   contacts: array<ToolContact, ${SAND.maxContacts}>,
+  shake: vec4f,
 }
 `
 
@@ -138,8 +139,8 @@ fn transport(@builtin(global_invocation_id) invocation: vec3u) {
     let contactYield = max(toolContact.x, otherContact.x);
     let disturbedShell = max(centerShell, neighborShell);
     let thresholdScale = min(mix(1.0, 0.08, contactYield), mix(1.0, 0.45, disturbedShell));
-    let threshold = friction * params.grid.y * linkLength * thresholdScale;
-    let excess = max(0.0, effectiveHeight - other.x - otherPenetration - threshold);
+    let threshold = friction * params.grid.y * linkLength * thresholdScale * (1.0 - params.shake.z * 0.85);
+    let excess = max(0.0, effectiveHeight - other.x - otherPenetration + dot(params.shake.xy, axisDirection) * params.grid.y * linkLength - threshold);
     let physicalThreshold = friction * params.grid.y * linkLength * mix(1.0, 0.45, disturbedShell);
     let physicalExcess = max(0.0, center.x - other.x - physicalThreshold);
     let supercritical = smoothstep(params.grid.y * 1.5, params.grid.y * 5.0, physicalExcess);

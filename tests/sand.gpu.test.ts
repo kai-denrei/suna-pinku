@@ -390,3 +390,26 @@ test('surface pipeline compiles and renders nonuniform opaque pixels offscreen',
     expect(errors).toEqual([])
   } finally { renderer.dispose(); solver.dispose(); texture.destroy(); staging.destroy() }
 })
+
+test('shake redistributes sand while conserving bed and airborne mass and respecting the floor', async () => {
+  const solver = new SandSolver(device, 64)
+  await solver.initialize()
+  const before = await readState(solver)
+  const initialMass = volume(before)
+  solver.shake(1)
+  step(solver, idleStroke(), 120)
+  const after = await readState(solver)
+  const totalMass = volume(after) + await particleMass(solver)
+  expect(Math.abs(totalMass - initialMass)).toBeLessThan(0.003)
+  let moved = 0
+  for (let i = 0; i < after.length; i += 4) {
+    expect(Number.isFinite(after[i])).toBe(true)
+    expect(after[i]).toBeGreaterThanOrEqual(SAND.floor - 1e-6)
+    moved += Math.abs(after[i] - before[i])
+  }
+  expect(moved).toBeGreaterThan(0.1)
+  solver.cancelShake()
+  step(solver, idleStroke(), 20)
+  expect(errors).toEqual([])
+  solver.dispose()
+})

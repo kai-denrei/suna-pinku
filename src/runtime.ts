@@ -1,3 +1,4 @@
+import { PlayController } from './play/controller'
 import { SandSound } from './audio/sound'
 import { SAND, idleStroke } from './config'
 import { InputController } from './input/controller'
@@ -21,6 +22,7 @@ export async function startSandboard(ui: InterfaceElements, monitor: BootMonitor
   const clock = new FixedClock(SAND.step, SAND.maxSteps)
   const listeners = new AbortController()
   let input: InputController | undefined
+  let play: PlayController | undefined
   let animation = 0
   let stopped = false
   let framesInFlight = 0
@@ -35,6 +37,8 @@ export async function startSandboard(ui: InterfaceElements, monitor: BootMonitor
     ui.reset.disabled = !interactive
     ui.radius.disabled = !interactive
     input?.setInteractive(interactive)
+    play?.setInteractive(interactive)
+    if (!interactive) solver.cancelShake()
   }
 
   const stop = () => {
@@ -43,6 +47,7 @@ export async function startSandboard(ui: InterfaceElements, monitor: BootMonitor
     cancelAnimationFrame(animation)
     listeners.abort()
     input?.dispose()
+    play?.dispose()
     sound.dispose()
     renderer.dispose(); solver.dispose(); gpu.dispose()
   }
@@ -54,6 +59,8 @@ export async function startSandboard(ui: InterfaceElements, monitor: BootMonitor
     resizePending = false
     ui.canvas.width = size.width; ui.canvas.height = size.height
     renderer.resize(size.width, size.height)
+    const cog = ui.cog.getBoundingClientRect()
+    renderer.markings.layout(renderer.camera, window.innerWidth, window.innerHeight, cog.x + cog.width / 2, cog.y + cog.height / 2)
   }
   try {
     monitor.stage('Initializing sand transport')
@@ -69,6 +76,10 @@ export async function startSandboard(ui: InterfaceElements, monitor: BootMonitor
     await gpu.device.queue.onSubmittedWorkDone()
     monitor.assertHealthy()
     await soundReady
+    renderer.markings.start(performance.now(), window.matchMedia('(prefers-reduced-motion: reduce)').matches)
+    play = new PlayController(ui, renderer.camera, solver, () => {
+      input?.setInteractive(false); input?.setInteractive(true); sound.cancelAll()
+    })
     input = new InputController(ui, renderer.camera, sound, () => { resetPending = true })
     setToolbarInteractive(true)
     const frame = (now: number) => {
@@ -85,6 +96,7 @@ export async function startSandboard(ui: InterfaceElements, monitor: BootMonitor
         resize()
         if (resetPending && !waveResetInteractive) {
           resetPending = false
+          renderer.markings.dismiss()
           waveResetInteractive = true
           sound.cancelAll()
           waveReset.start(now, sound.playResetWave(), waveResetViewport(renderer.camera))
@@ -112,7 +124,8 @@ export async function startSandboard(ui: InterfaceElements, monitor: BootMonitor
           }
         }
         const count = waveResetInteractive ? 0 : clock.advance(now)
-        if (count > 0) solver.encode(encoder, Array.from({ length: count }, () => activeInput.strokes.nextBatch()))
+        if (count > 0) solver.encode(encoder, Array.from({ length: count }, () => play!.nextBatch(activeInput.strokes.nextBatch())))
+        renderer.palette = play!.palette
         renderer.encode(encoder, gpu.context.getCurrentTexture().createView(), activeInput.strokes.cursor, now, activeInput.showPointer, waveState)
         gpu.device.queue.submit([encoder.finish()])
         framesInFlight++

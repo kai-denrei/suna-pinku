@@ -1,3 +1,4 @@
+import { SandMarkings } from './markings'
 import { SAND, type Stroke } from '../config'
 import { checkedShader } from '../platform/shader'
 import type { WaveResetState } from '../reset/effect'
@@ -5,7 +6,6 @@ import { idleWaveResetState } from '../reset/effect'
 import type { SandSolver } from '../simulation/solver'
 import { AirborneShadow } from './airborne-shadow'
 import { SandCamera } from './camera'
-import { CoconutShadow } from './coconut-shadow'
 import { BedLighting } from './lighting'
 import { GLINT_FORMAT, HDR_SCENE_FORMAT, SandPostProcess } from './postprocess'
 import { surfaceShader } from './shaders'
@@ -15,9 +15,13 @@ const LIGHT_DIRECTION = [Math.cos(LIGHT_ANGLE), 0.65, Math.sin(LIGHT_ANGLE)] as 
 
 export class SandRenderer {
   readonly camera = new SandCamera()
+  readonly markings: SandMarkings
+  private markingsGroup!: GPUBindGroup
+  palette = 0
   private readonly uniform: GPUBuffer
   private readonly lighting: BedLighting
-  private readonly shadow: CoconutShadow
+  private readonly shadowTexture: GPUTexture
+  private readonly shadowSampler: GPUSampler
   private readonly airborneShadow: AirborneShadow
   private readonly post: SandPostProcess
   private readonly indices: GPUBuffer
@@ -35,10 +39,12 @@ export class SandRenderer {
   private readonly solver: SandSolver
   private readonly mobileGrainFiltering: boolean
   constructor(device: GPUDevice, solver: SandSolver, format: GPUTextureFormat, mobileGrainFiltering = false) {
+    this.markings = new SandMarkings(device)
     this.device = device; this.solver = solver; this.mobileGrainFiltering = mobileGrainFiltering
     this.uniform = device.createBuffer({ label: 'Surface view', size: this.data.byteLength, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST })
     this.lighting = new BedLighting(device, solver, this.uniform)
-    this.shadow = new CoconutShadow(device, mobileGrainFiltering)
+    this.shadowTexture = device.createTexture({ label: 'Neutral studio shadow', size: [1, 1], format: 'r8unorm', usage: GPUTextureUsage.TEXTURE_BINDING })
+    this.shadowSampler = device.createSampler({ magFilter: 'linear', minFilter: 'linear' })
     this.airborneShadow = new AirborneShadow(device, solver)
     this.post = new SandPostProcess(device, format, format)
     const resolution = solver.resolution
@@ -57,19 +63,23 @@ export class SandRenderer {
   }
 
   async initialize() {
-    await Promise.all([this.lighting.initialize(), this.shadow.initialize(), this.airborneShadow.initialize(), this.post.initialize()])
+    await Promise.all([this.markings.initialize(), this.lighting.initialize(), this.airborneShadow.initialize(), this.post.initialize()])
     const module = await checkedShader(this.device, 'Granular surface WGSL', surfaceShader)
     this.pipeline = await this.device.createRenderPipelineAsync({ label: 'Granular sand surface', layout: 'auto',
       vertex: { module, entryPoint: 'vertex' }, fragment: { module, entryPoint: this.mobileGrainFiltering ? 'fragmentMobile' : 'fragment', targets: [{ format: HDR_SCENE_FORMAT }, { format: GLINT_FORMAT }] },
       primitive: { topology: 'triangle-list', cullMode: 'none' },
       depthStencil: { format: 'depth24plus', depthWriteEnabled: true, depthCompare: 'less' },
     })
+    this.markingsGroup = this.device.createBindGroup({ layout: this.pipeline.getBindGroupLayout(1), entries: [
+      { binding: 0, resource: { buffer: this.markings.uniform } },
+      { binding: 1, resource: this.markings.texture.createView() },
+    ] })
     this.groups = this.solver.buffers.map((buffer) => this.device.createBindGroup({ layout: this.pipeline.getBindGroupLayout(0), entries: [
       { binding: 0, resource: { buffer: this.uniform } },
       { binding: 1, resource: { buffer } },
       { binding: 3, resource: { buffer: this.lighting.buffer } },
-      { binding: 4, resource: this.shadow.sampler },
-      { binding: 5, resource: this.shadow.texture.createView() },
+      { binding: 4, resource: this.shadowSampler },
+      { binding: 5, resource: this.shadowTexture.createView() },
       { binding: 6, resource: this.airborneShadow.sampler },
       { binding: 7, resource: this.airborneShadow.texture.createView() },
     ] }))
@@ -89,8 +99,8 @@ export class SandRenderer {
     this.grainGroup = this.device.createBindGroup({ layout: this.grainPipeline.getBindGroupLayout(0), entries: [
       { binding: 0, resource: { buffer: this.uniform } },
       { binding: 2, resource: { buffer: this.solver.particles } },
-      { binding: 4, resource: this.shadow.sampler },
-      { binding: 5, resource: this.shadow.texture.createView() },
+      { binding: 4, resource: this.shadowSampler },
+      { binding: 5, resource: this.shadowTexture.createView() },
     ] })
   }
 
@@ -101,12 +111,12 @@ export class SandRenderer {
     this.camera.aspect = width / height
     this.depth = this.device.createTexture({ label: 'Surface depth', size: [width, height], format: 'depth24plus', usage: GPUTextureUsage.RENDER_ATTACHMENT })
     this.post.resize(width, height)
-    this.shadow.resize(width, height, (x, y) => this.camera.screenToBed(x, y, width, height))
   }
 
   encode(encoder: GPUCommandEncoder, target: GPUTextureView, pointer: Stroke, now: number, showPointer = false, waveState: WaveResetState = idleWaveResetState()) {
     if (!this.depth) throw new Error('Renderer needs a nonzero drawing buffer')
-    this.shadow.encode(encoder, now)
+    // Pink studio lighting: the palm mask stays unused.
+    this.markings.update(now)
     this.data.set([
       ...this.camera.eye, this.camera.tanHalfFov,
       ...this.camera.forward, this.camera.aspect,
@@ -115,21 +125,22 @@ export class SandRenderer {
       ...LIGHT_DIRECTION, 0,
       this.solver.resolution, SAND.extent, this.width, this.height,
       pointer.to.x, pointer.to.y, pointer.radius, showPointer ? 1 : 0,
-      this.shadow.centerX, this.shadow.centerZ, this.shadow.halfWidth, this.shadow.halfHeight,
-      this.shadow.opacity, 0, 0, 0,
+      0, 0, 1, 1,
+      0, this.palette, 0, 0,
     ])
     this.device.queue.writeBuffer(this.uniform, 0, this.data)
     if (!waveState.active || !waveState.incoming) this.lighting.encode(encoder, LIGHT_ANGLE)
     if (waveState.justStarted) this.airborneShadow.clear(encoder)
     else if (!waveState.active) this.airborneShadow.encode(encoder, LIGHT_DIRECTION)
     const pass = encoder.beginRenderPass({ label: 'Sand image', colorAttachments: [
-      { view: this.post.target, clearValue: { r: 0.1778341, g: 0.12052718, b: 0.06615726, a: 1 }, loadOp: 'clear', storeOp: 'store' },
+      { view: this.post.target, clearValue: { r: 0.7, g: 0.22, b: 0.4, a: 1 }, loadOp: 'clear', storeOp: 'store' },
       { view: this.post.glintTarget, clearValue: { r: 0, g: 0, b: 0, a: 0 }, loadOp: 'clear', storeOp: 'store' },
     ],
       depthStencilAttachment: { view: this.depth.createView(), depthClearValue: 1, depthLoadOp: 'clear', depthStoreOp: 'discard' },
     })
     pass.setPipeline(this.pipeline)
     pass.setBindGroup(0, this.groups[this.solver.stateIndex])
+    pass.setBindGroup(1, this.markingsGroup)
     pass.setIndexBuffer(this.indices, 'uint32')
     pass.drawIndexed(this.indexCount)
     if (!waveState.active) {
@@ -142,5 +153,5 @@ export class SandRenderer {
     this.post.encode(encoder, target)
   }
 
-  dispose() { this.lighting.dispose(); this.shadow.dispose(); this.airborneShadow.dispose(); this.post.dispose(); this.uniform.destroy(); this.indices.destroy(); this.depth?.destroy() }
+  dispose() { this.markings.dispose(); this.lighting.dispose(); this.shadowTexture.destroy(); this.airborneShadow.dispose(); this.post.dispose(); this.uniform.destroy(); this.indices.destroy(); this.depth?.destroy() }
 }

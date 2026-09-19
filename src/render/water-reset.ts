@@ -360,8 +360,8 @@ fn cloudMask(directionRaw: vec3f, time: f32) -> f32 {
 fn skyRadiance(directionRaw: vec3f, sunDirection: vec3f, time: f32) -> vec3f {
   let direction = normalize(directionRaw);
   let upward = clamp(direction.y, -1.0, 1.0);
-  let horizon = vec3f(0.74, 0.89, 1.06);
-  let zenith = vec3f(0.12, 0.40, 0.90);
+  let horizon = vec3f(1.06, 0.74, 0.89);
+  let zenith = vec3f(0.65, 0.30, 0.63);
   let below = vec3f(0.035, 0.085, 0.10);
   var color = select(
     mix(horizon, below, clamp(-upward * 3.0, 0.0, 1.0)),
@@ -462,9 +462,9 @@ fn edgeSafeRefractionUv(sampleUv: vec2f, dimensions: vec2f) -> vec2f {
   let causticGain = 1.0 + causticPositive * 0.26 - causticNegative * 0.08;
   refractedBed *= vec3f(causticGain * 1.040, causticGain * 1.020, causticGain * 0.992);
 
-  let extinction = vec3f(0.34, 0.075, 0.030) * mix(0.84, 1.16, overlay.waveLook.x);
+  let extinction = vec3f(0.030, 0.24, 0.075) * mix(0.84, 1.16, overlay.waveLook.x);
   let transmittance = exp(-extinction * pathLength);
-  let scatterColor = vec3f(0.018, 0.115, 0.17) * mix(0.68, 1.14, overlay.waveLook.x);
+  let scatterColor = vec3f(0.18, 0.04, 0.12) * mix(0.68, 1.14, overlay.waveLook.x);
   var transmission = refractedBed * transmittance + scatterColor * (vec3f(1.0) - transmittance);
   let causticColor = vec3f(1.0, 0.97, 0.86) * 0.20 + vec3f(0.84, 0.94, 1.0) * 0.05;
   transmission += causticColor * (causticLace * causticDepth);
