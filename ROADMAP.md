@@ -22,11 +22,8 @@ Custom iPhone haptic patterns are a native-app/wrapper option; Safari's PWA does
 
 ## Shareable messages
 
-Proposed URL form: `/#Your%20message` (under the deployed site's base path).
-Read a decoded fragment as plain text, cap length, and wrap it for portrait and
-landscape. No backend is needed; shared text is readable by anyone with the link.
-Possible behaviors: fade like the opening title, stay until Fresh Sand
-(recommended for greetings), or stamp real mutable grooves that fingers can erase.
-The last option requires solver integration rather than just the existing relief
-mask. A composer/share button can encode Unicode and spaces automatically. This
-is a roadmap option; fragment messages are not implemented yet.
+Shipped: `/#Your%20message` renders a plain-text greeting in the sand, stays until
+Fresh Sand, and supports up to 120 characters with Unicode-aware wrapping.
+Future additions: an in-app composer/share button, optional fading greetings, and
+real mutable text grooves that fingers can erase. The current greeting uses the
+same shaded relief as the opening title.

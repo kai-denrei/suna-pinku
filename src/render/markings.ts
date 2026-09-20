@@ -1,3 +1,4 @@
+import { fragmentMessage, wrapMessage } from '../play/message'
 import { SAND } from '../config'
 import type { SandCamera } from './camera'
 
@@ -19,10 +20,12 @@ export class SandMarkings {
   private startedAt = Infinity
   private finished = false
   private reducedMotion = false
+  message = typeof location === 'undefined' ? undefined : fragmentMessage(location.hash)
+  private context: CanvasRenderingContext2D | undefined
 
   constructor(device: GPUDevice) {
     this.device = device
-    this.texture = device.createTexture({ label: 'Sand lettering mask', size: [1024, 256], format: 'rgba8unorm', usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST })
+    this.texture = device.createTexture({ label: 'Sand lettering mask', size: [1024, 512], format: 'rgba8unorm', usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST })
     this.uniform = device.createBuffer({ label: 'Sand inscription layout', size: 48, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST })
   }
 
@@ -32,24 +35,53 @@ export class SandMarkings {
       await handwriting.load()
       document.fonts.add(handwriting)
       const canvas = document.createElement('canvas')
-      canvas.width = 1024; canvas.height = 256
-      const context = canvas.getContext('2d')!
-      context.fillStyle = 'white'
-      context.textAlign = 'center'
-      context.textBaseline = 'middle'
-      context.font = '500 126px PinkuHand'
-      context.fillText('Cuteness', 498, 63, 950)
-      context.font = '500 126px PinkuHand'
-      context.fillText('Impermanence', 524, 178, 950)
-      this.device.queue.writeTexture({ texture: this.texture }, context.getImageData(0, 0, 1024, 256).data, { bytesPerRow: 4096 }, [1024, 256])
+      canvas.width = 1024; canvas.height = 512
+      this.context = canvas.getContext('2d')!
+      this.paint()
     }
   }
 
+  setMessage(message: string | undefined, now: number) {
+    this.message = message
+    this.finished = !message
+    this.startedAt = now
+    this.paint()
+  }
+
+  private paint() {
+    const context = this.context
+    if (!context) return
+    context.clearRect(0, 0, 1024, 512)
+    context.fillStyle = 'white'
+    context.textAlign = 'center'
+    context.textBaseline = 'middle'
+    if (this.message) {
+      let fontSize = 116
+      let lines: string[] = []
+      for (; fontSize >= 24; fontSize -= 2) {
+        context.font = `500 ${fontSize}px PinkuHand, sans-serif`
+        lines = wrapMessage(this.message, text => context.measureText(text).width, 940)
+        if (lines.length * fontSize * 1.12 <= 464) break
+      }
+      const spacing = fontSize * 1.12
+      lines.forEach((line, index) => context.fillText(line, 512, 256 + (index - (lines.length - 1) / 2) * spacing))
+    } else {
+      context.save()
+      context.scale(1, 2)
+      context.font = '500 126px PinkuHand'
+      context.fillText('Cuteness', 498, 63, 950)
+      context.fillText('Impermanence', 524, 178, 950)
+      context.restore()
+    }
+    this.device.queue.writeTexture({ texture: this.texture }, context.getImageData(0, 0, 1024, 512).data, { bytesPerRow: 4096 }, [1024, 512])
+  }
+
   layout(camera: SandCamera, width: number, height: number, cogX: number, cogY: number) {
-    const titleWidth = Math.min(width * 0.82, 620)
+    const titleWidth = Math.min(width * 0.82, 620, this.message ? height * 0.96 : Infinity)
     const centerY = height * 0.36
-    const left = camera.screenToBed((width - titleWidth) / 2, centerY - titleWidth / 8, width, height)
-    const right = camera.screenToBed((width + titleWidth) / 2, centerY + titleWidth / 8, width, height)
+    const halfHeight = Math.min(titleWidth / (this.message ? 4 : 8), height * 0.24)
+    const left = camera.screenToBed((width - titleWidth) / 2, centerY - halfHeight, width, height)
+    const right = camera.screenToBed((width + titleWidth) / 2, centerY + halfHeight, width, height)
     const cog = camera.screenToBed(cogX, cogY, width, height)
     const edge = camera.screenToBed(cogX + 20, cogY, width, height)
     this.data.set([left.x, left.y, right.x - left.x, right.y - left.y, cog.x, cog.y, Math.abs(edge.x - cog.x), 1])
@@ -59,7 +91,7 @@ export class SandMarkings {
   dismiss() { this.finished = true }
   update(now: number) {
     const elapsed = now - this.startedAt
-    this.data[8] = this.finished ? 0 : this.reducedMotion ? Number(elapsed >= 0 && elapsed < 6000) : introDepth(elapsed)
+    this.data[8] = this.finished ? 0 : this.message ? Number(elapsed >= 0) : this.reducedMotion ? Number(elapsed >= 0 && elapsed < 6000) : introDepth(elapsed)
     this.data[9] = SAND.extent
     this.device.queue.writeBuffer(this.uniform, 0, this.data)
   }
@@ -74,13 +106,13 @@ fn letterMask(position: vec2f) -> f32 {
   if (markings.timing.x <= 0.0 || markings.title.z <= 0.0) { return 0.0; }
   let uv = (position - markings.title.xy) / markings.title.zw;
   if (any(uv < vec2f(0.0)) || any(uv > vec2f(1.0))) { return 0.0; }
-  let texel = uv * vec2f(1024.0, 256.0) - 0.5;
+  let texel = uv * vec2f(textureDimensions(lettering)) - 0.5;
   let base = vec2i(floor(texel));
   let blend = fract(texel);
-  let a = textureLoad(lettering, clamp(base, vec2i(0), vec2i(1023, 255)), 0).a;
-  let b = textureLoad(lettering, clamp(base + vec2i(1, 0), vec2i(0), vec2i(1023, 255)), 0).a;
-  let c = textureLoad(lettering, clamp(base + vec2i(0, 1), vec2i(0), vec2i(1023, 255)), 0).a;
-  let d = textureLoad(lettering, clamp(base + vec2i(1, 1), vec2i(0), vec2i(1023, 255)), 0).a;
+  let a = textureLoad(lettering, clamp(base, vec2i(0), vec2i(textureDimensions(lettering)) - 1), 0).a;
+  let b = textureLoad(lettering, clamp(base + vec2i(1, 0), vec2i(0), vec2i(textureDimensions(lettering)) - 1), 0).a;
+  let c = textureLoad(lettering, clamp(base + vec2i(0, 1), vec2i(0), vec2i(textureDimensions(lettering)) - 1), 0).a;
+  let d = textureLoad(lettering, clamp(base + vec2i(1, 1), vec2i(0), vec2i(textureDimensions(lettering)) - 1), 0).a;
   return mix(mix(a, b, blend.x), mix(c, d, blend.x), blend.y) * markings.timing.x;
 }
 fn cogMask(position: vec2f) -> f32 {

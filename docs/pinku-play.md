@@ -67,3 +67,22 @@ Browser and split-screen layouts retain dynamic viewport sizing. This targets
 the standalone WebKit bottom-gap behavior without adding a second safe-area pad.
 Actual installed-iPhone confirmation remains necessary; desktop emulation cannot
 reproduce every OS viewport quirk.
+
+## Fragment greetings
+
+A nonempty decoded URL fragment replaces the opening inscription and remains
+until Fresh Sand; normal launches retain the fading title. The greeting uses
+shaded relief, not solver-carved grooves, so finger drawing does not erase its
+letters. Reset dismisses it without editing the URL; reopening the link restores
+it. Changing the hash displays the new greeting immediately, while removing or
+invalidating the hash clears the current inscription without replaying the intro.
+
+Fragments are decoded once, whitespace-normalized, stripped of control/bidi
+formatting, and capped at 120 grapheme clusters. Malformed encoding and raw
+fragments beyond 8192 characters fall back safely. Text only reaches canvas
+fillText and the screen-reader heading's textContent, never HTML interpolation.
+Caveat supplies the handwriting; scripts outside its coverage use device fonts.
+Measured word wrapping, grapheme-safe long-word breaks, and fitted font sizing
+keep messages inside a 1024×512 mask. Orientation preserves its aspect ratio and
+visibility; the texture is repainted only when the message changes. Existing
+service-worker caching supports fragment greetings offline after installation.

@@ -4,6 +4,17 @@ A pocket-sized pink sand garden, built on [Sandboard](https://github.com/scottst
 
 Draw with multiple fingers, press heart, star, unicorn, bunny, flower, bow, cat, and dog imprints into the sand, then wash them away. Choose sakura, candy, or lilac pink. Tap the small cog impressed into the sand to open the radial shape selector and tools. The Kira kira wheel adds draggable rose quartz, heart gems, star charms, and pearls with soft sparkles, weighted landings, and real sand impressions. Portrait and landscape layouts adapt automatically. The cog survives resets. “Cuteness Impermanence” appears as an opening sand inscription, then disappears. Tools include adjustable brush/stamp sizes, a droplet brush that wets and darkens sand, a fresh-sand wash, and fullscreen.
 
+## Send a message
+
+Append your message after `#`, using `%20` for spaces:
+
+https://kai-denrei.github.io/suna-pinku/#Thinking%20of%20you
+
+The greeting replaces the opening title and remains until **Fresh Sand**. Up to
+120 Unicode characters are displayed, with automatic wrapping. Reloading the
+link restores the greeting. For arbitrary text, build the fragment with
+`encodeURIComponent(message)`.
+
 ## Run locally
 
 ```sh

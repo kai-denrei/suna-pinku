@@ -1,3 +1,5 @@
+import { fragmentMessage } from './play/message'
+import { INTRO_TITLE } from './render/markings'
 import { sizeSurface } from './platform/surface-viewport'
 import { PlayController } from './play/controller'
 import { SandSound } from './audio/sound'
@@ -76,6 +78,13 @@ export async function startSandboard(ui: InterfaceElements, monitor: BootMonitor
     await solver.initialize()
     monitor.stage('Compiling granular lighting')
     await renderer.initialize()
+    const inscription = ui.root.querySelector<HTMLElement>('#intro-title')!
+    inscription.textContent = renderer.markings.message ?? INTRO_TITLE
+    window.addEventListener('hashchange', () => {
+      renderer.markings.setMessage(fragmentMessage(location.hash), performance.now())
+      inscription.textContent = renderer.markings.message ?? INTRO_TITLE
+      resizePending = true
+    }, { signal: listeners.signal })
     monitor.stage('Rendering the first surface')
     resize()
     const encoder = gpu.device.createCommandEncoder()
@@ -109,6 +118,7 @@ export async function startSandboard(ui: InterfaceElements, monitor: BootMonitor
         if (resetPending && !waveResetInteractive) {
           resetPending = false
           renderer.markings.dismiss()
+          inscription.textContent = INTRO_TITLE
           renderer.jewels.clear()
           ui.root.querySelector('#jewel-count')!.textContent = '0 / 24 treasures'
           waveResetInteractive = true
