@@ -1,3 +1,4 @@
+import { jewelPresets } from '../src/play/jewels'
 import { afterAll, beforeAll, expect, test } from 'vitest'
 import { create, globals } from 'webgpu'
 import { SAND, idleStroke, type Stroke } from '../src/config'
@@ -361,7 +362,7 @@ test('airborne grains build a nonzero collective optical-depth shadow', async ()
   } finally { shadow.dispose(); solver.dispose(); staging.destroy() }
 })
 
-test('surface pipeline compiles and renders nonuniform opaque pixels offscreen', async () => {
+test.each([false, true])('surface pipeline renders opaque pixels, with jewels: %s', async (withJewels) => {
   const solver = new SandSolver(device, 128)
   await solver.initialize()
   const renderer = new SandRenderer(device, solver, 'rgba8unorm')
@@ -370,6 +371,7 @@ test('surface pipeline compiles and renders nonuniform opaque pixels offscreen',
   try {
     await renderer.initialize()
     renderer.resize(256, 192)
+    if (withJewels) jewelPresets.forEach((preset, i) => renderer.jewels.add(preset, { x: (i - 1.5) * 0.06, y: 0 }, 0.02))
     step(solver, { from: { x: -0.07, y: 0 }, to: { x: 0.07, y: 0 }, velocity: { x: 0.5, y: 0 }, radius: 0.022, pressure: 1, active: true }, 100)
     device.pushErrorScope('validation')
     const encoder = device.createCommandEncoder()

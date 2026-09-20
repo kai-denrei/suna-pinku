@@ -150,7 +150,7 @@ dialog h2 {
     transparent 60%
   );
 }
-.shapes [data-shape] {
+.shapes :is([data-shape], [data-jewel]) {
   position: absolute;
   top: calc(50% + var(--y));
   left: calc(50% + var(--x));
@@ -220,7 +220,7 @@ dialog h2 {
 }
 .toolbar {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(5, 1fr);
   gap: 4px;
   padding-top: 6px;
   border-top: 1px solid #efccda;
@@ -422,18 +422,21 @@ dialog h2 {
   .swatches {
     gap: 6px;
   }
-  .shapes [data-shape] {
+  .shapes :is([data-shape], [data-jewel]) {
     width: 54px;
     height: 54px;
   }
 }
-@media (max-height: 500px) and (min-width: 600px) {
+@media (orientation: landscape) and (max-height: 600px) and (min-width: 500px) {
   .toybox {
-    width: 580px;
+    width: min(
+      620px,
+      calc(100% - 24px - env(safe-area-inset-left) - env(safe-area-inset-right))
+    );
   }
   .toybox[open] {
     display: grid;
-    grid-template-columns: 280px 1fr;
+    grid-template-columns: minmax(220px, 1fr) minmax(220px, 1fr);
     column-gap: 10px;
   }
   .tools-heading {
@@ -452,7 +455,7 @@ dialog h2 {
   .shapes {
     width: 220px;
   }
-  .shapes [data-shape] {
+  .shapes :is([data-shape], [data-jewel]) {
     width: 48px;
     height: 48px;
   }
@@ -481,4 +484,12 @@ dialog h2 {
     animation: none !important;
     transition: none !important;
   }
+}
+
+#clear-jewels {
+  min-height: 44px;
+  border-radius: 22px;
+  padding: 0 18px;
+  background: #fce1ed;
+  font-size: 11px;
 }

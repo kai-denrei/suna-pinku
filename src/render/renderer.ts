@@ -1,3 +1,5 @@
+import { JewelCollection } from '../play/jewels'
+import { JewelRenderer } from './jewels'
 import { SandMarkings } from './markings'
 import { SAND, type Stroke } from '../config'
 import { checkedShader } from '../platform/shader'
@@ -18,6 +20,9 @@ export class SandRenderer {
   readonly markings: SandMarkings
   private markingsGroup!: GPUBindGroup
   palette = 0
+  reducedMotion = false
+  readonly jewels = new JewelCollection()
+  private readonly jewelRenderer: JewelRenderer
   private readonly uniform: GPUBuffer
   private readonly lighting: BedLighting
   private readonly shadowTexture: GPUTexture
@@ -42,6 +47,7 @@ export class SandRenderer {
     this.markings = new SandMarkings(device)
     this.device = device; this.solver = solver; this.mobileGrainFiltering = mobileGrainFiltering
     this.uniform = device.createBuffer({ label: 'Surface view', size: this.data.byteLength, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST })
+    this.jewelRenderer = new JewelRenderer(device, solver, this.jewels, this.uniform)
     this.lighting = new BedLighting(device, solver, this.uniform)
     this.shadowTexture = device.createTexture({ label: 'Neutral studio shadow', size: [1, 1], format: 'r8unorm', usage: GPUTextureUsage.TEXTURE_BINDING })
     this.shadowSampler = device.createSampler({ magFilter: 'linear', minFilter: 'linear' })
@@ -63,7 +69,7 @@ export class SandRenderer {
   }
 
   async initialize() {
-    await Promise.all([this.markings.initialize(), this.lighting.initialize(), this.airborneShadow.initialize(), this.post.initialize()])
+    await Promise.all([this.jewelRenderer.initialize(), this.markings.initialize(), this.lighting.initialize(), this.airborneShadow.initialize(), this.post.initialize()])
     const module = await checkedShader(this.device, 'Granular surface WGSL', surfaceShader)
     this.pipeline = await this.device.createRenderPipelineAsync({ label: 'Granular sand surface', layout: 'auto',
       vertex: { module, entryPoint: 'vertex' }, fragment: { module, entryPoint: this.mobileGrainFiltering ? 'fragmentMobile' : 'fragment', targets: [{ format: HDR_SCENE_FORMAT }, { format: GLINT_FORMAT }] },
@@ -120,8 +126,8 @@ export class SandRenderer {
     this.data.set([
       ...this.camera.eye, this.camera.tanHalfFov,
       ...this.camera.forward, this.camera.aspect,
-      ...this.camera.right, 0,
-      ...this.camera.up, 0,
+      ...this.camera.right, now / 1000,
+      ...this.camera.up, this.reducedMotion ? 1 : 0,
       ...LIGHT_DIRECTION, 0,
       this.solver.resolution, SAND.extent, this.width, this.height,
       pointer.to.x, pointer.to.y, pointer.radius, showPointer ? 1 : 0,
@@ -148,10 +154,11 @@ export class SandRenderer {
       pass.setBindGroup(0, this.grainGroup)
       pass.draw(6, this.solver.particleCount)
     }
+    this.jewelRenderer.draw(pass)
     pass.end()
     this.post.setWaveState(waveState, this.camera)
     this.post.encode(encoder, target)
   }
 
-  dispose() { this.markings.dispose(); this.lighting.dispose(); this.shadowTexture.destroy(); this.airborneShadow.dispose(); this.post.dispose(); this.uniform.destroy(); this.indices.destroy(); this.depth?.destroy() }
+  dispose() { this.jewelRenderer.dispose(); this.markings.dispose(); this.lighting.dispose(); this.shadowTexture.destroy(); this.airborneShadow.dispose(); this.post.dispose(); this.uniform.destroy(); this.indices.destroy(); this.depth?.destroy() }
 }

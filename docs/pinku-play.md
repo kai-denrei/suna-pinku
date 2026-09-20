@@ -21,3 +21,22 @@ All tools, palettes, motion, installation, and fullscreen controls live in the c
 Publishing uses a configurable Vite base path. Audio, manifest icons, and the worker stay inside that path, and offline cache names include it so multiple projects on one GitHub Pages origin do not delete each other's caches. The `main` branch workflow runs non-GPU checks, builds using the Pages-provided base path, and publishes a Pages artifact. Hardware GPU checks remain local because the hosted runner does not provide the target device.
 
 Shape selection returns to Draw after three seconds without use. Selection and completed stamps start a fresh deadline; hovering does not extend it. A held placement suspends the deadline until release or cancellation, so a long drag is never converted into a drawing stroke midway. Returning from a hidden page checks the deadline before accepting the next pointer, covering browser timer throttling. Reset returns to Draw and disposal clears pending timers.
+
+## Kira kira and rotation
+
+The second radial wheel holds four reusable treasures: rose quartz, heart gem,
+star charm, and pearl. Tap or drag to place; Draw mode also lets a finger pick up
+and move an existing treasure. Placement tools return to Draw after three idle
+seconds. Clear gems preserves drawings; Fresh sand clears both.
+
+Treasures are decorative surface-supported meshes, not rigid-body particles.
+They sample the GPU sand height and have soft contact shadows, faceted lighting,
+and slow sparkle pulses. Reduced motion freezes the pulses. A 24-object cap,
+shared instanced meshes, and revision-based buffer uploads bound rendering work.
+They do not yet collide, roll under gravity, or displace sand.
+
+Viewport changes preserve the solver state and cancel active strokes/placements.
+Gems outside the new viewport move just inside it to remain reachable. Orientation
+is derived from committed viewport dimensions; portrait stacks the tools and
+short landscape screens use two columns. Resize events, including orientation
+and visual viewport changes, are coalesced while preserving the pixel budget.

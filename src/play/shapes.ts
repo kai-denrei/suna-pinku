@@ -14,7 +14,7 @@ export type Shape = typeof shapes[number]
 
 // SVG paths are sampled once, outside the animation loop. Contacts use the same
 // conservative displacement as fingers; stamps are editable sand, not decals.
-export function sampleShape(shape: Shape): Point[] {
+export function sampleShape(shape: { path: string }): Point[] {
   const path = document.createElementNS('http://www.w3.org/2000/svg', 'path')
   path.setAttribute('d', shape.path)
   const length = path.getTotalLength()

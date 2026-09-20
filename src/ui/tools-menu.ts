@@ -15,14 +15,16 @@ export class ToolsMenu {
       const rect = ui.tools.getBoundingClientRect()
       if (event.target === ui.tools && (event.clientX < rect.left || event.clientX > rect.right || event.clientY < rect.top || event.clientY > rect.bottom)) this.close()
     }, { signal })
-    const shapeButtons = [...ui.root.querySelectorAll<HTMLButtonElement>('[data-shape]')]
-    shapeButtons.forEach((button, index) => button.addEventListener('keydown', event => {
-      const movement: Record<string, number> = { ArrowRight: 1, ArrowDown: 1, ArrowLeft: -1, ArrowUp: -1 }
-      const direction = movement[event.key]
-      if (!direction) return
-      event.preventDefault()
-      shapeButtons[(index + direction + shapeButtons.length) % shapeButtons.length].focus()
-    }, { signal }))
+    for (const selector of ['[data-shape]', '[data-jewel]']) {
+      const shapeButtons = [...ui.root.querySelectorAll<HTMLButtonElement>(selector)]
+      shapeButtons.forEach((button, index) => button.addEventListener('keydown', event => {
+        const movement: Record<string, number> = { ArrowRight: 1, ArrowDown: 1, ArrowLeft: -1, ArrowUp: -1 }
+        const direction = movement[event.key]
+        if (!direction) return
+        event.preventDefault()
+        shapeButtons[(index + direction + shapeButtons.length) % shapeButtons.length].focus()
+      }, { signal }))
+    }
     const setFullscreen = (enabled: boolean) => {
       ui.fullscreen.setAttribute('aria-pressed', String(enabled))
       ui.fullscreen.setAttribute('aria-label', enabled ? 'Exit full screen' : 'Enter full screen')

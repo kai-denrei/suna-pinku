@@ -57,8 +57,14 @@ export async function startSandboard(ui: InterfaceElements, monitor: BootMonitor
     const size = drawingBuffer(window.innerWidth, window.innerHeight, window.devicePixelRatio)
     if (!size) return
     resizePending = false
+    input?.setInteractive(false)
+    if (!waveResetInteractive) input?.setInteractive(true)
+    play?.cancelPlacement()
+    sound.cancelAll()
+    ui.root.dataset.orientation = window.innerWidth > window.innerHeight ? 'landscape' : 'portrait'
     ui.canvas.width = size.width; ui.canvas.height = size.height
     renderer.resize(size.width, size.height)
+    renderer.jewels.fitViewport(renderer.camera, window.innerWidth, window.innerHeight)
     const cog = ui.cog.getBoundingClientRect()
     renderer.markings.layout(renderer.camera, window.innerWidth, window.innerHeight, cog.x + cog.width / 2, cog.y + cog.height / 2)
   }
@@ -76,8 +82,11 @@ export async function startSandboard(ui: InterfaceElements, monitor: BootMonitor
     await gpu.device.queue.onSubmittedWorkDone()
     monitor.assertHealthy()
     await soundReady
+    const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)')
+    renderer.reducedMotion = reducedMotion.matches
+    reducedMotion.addEventListener('change', () => { renderer.reducedMotion = reducedMotion.matches }, { signal: listeners.signal })
     renderer.markings.start(performance.now(), window.matchMedia('(prefers-reduced-motion: reduce)').matches)
-    play = new PlayController(ui, renderer.camera, solver, () => {
+    play = new PlayController(ui, renderer.camera, solver, renderer.jewels, () => {
       input?.setInteractive(false); input?.setInteractive(true); sound.cancelAll()
     })
     input = new InputController(ui, renderer.camera, sound, () => { resetPending = true })
@@ -97,6 +106,8 @@ export async function startSandboard(ui: InterfaceElements, monitor: BootMonitor
         if (resetPending && !waveResetInteractive) {
           resetPending = false
           renderer.markings.dismiss()
+          renderer.jewels.clear()
+          ui.root.querySelector('#jewel-count')!.textContent = '0 / 24 treasures'
           waveResetInteractive = true
           sound.cancelAll()
           waveReset.start(now, sound.playResetWave(), waveResetViewport(renderer.camera))
@@ -135,6 +146,7 @@ export async function startSandboard(ui: InterfaceElements, monitor: BootMonitor
       } catch (error) { monitor.fail(error) }
     }
     window.addEventListener('resize', () => { resizePending = true }, { signal: listeners.signal })
+    screen.orientation?.addEventListener('change', () => { resizePending = true }, { signal: listeners.signal })
     window.visualViewport?.addEventListener('resize', () => { resizePending = true }, { signal: listeners.signal })
     document.addEventListener('visibilitychange', () => clock.reset(), { signal: listeners.signal })
     window.addEventListener('pagehide', stop, { once: true, signal: listeners.signal })

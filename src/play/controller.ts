@@ -3,6 +3,7 @@ import { SAND, type Stroke } from '../config'
 import type { SandCamera } from '../render/camera'
 import type { SandSolver } from '../simulation/solver'
 import type { InterfaceElements } from '../ui/interface'
+import { JewelCollection, jewelPresets, type Jewel, type JewelPreset } from './jewels'
 import { PhoneMotion } from './motion'
 import { shapes, sampleShape, stampStrokes, type Shape } from './shapes'
 
@@ -10,7 +11,9 @@ export class PlayController {
   private readonly abort = new AbortController()
   private readonly motion: PhoneMotion
   private readonly ui: InterfaceElements
-  private selected: Shape | undefined
+  private selected: Shape | JewelPreset | undefined
+  private dragging: Jewel | undefined
+  cancelPlacement: () => void = () => {}
   private pending: Stroke[] = []
   private activePointer: number | undefined
   private interactive = true
@@ -18,15 +21,16 @@ export class PlayController {
   private shapeIdleTimer: ReturnType<typeof setTimeout> | undefined
   private shapeIdleDeadline = Infinity
   private returnToDraw: () => void = () => {}
-  private readonly samples = new Map(shapes.map(shape => [shape.id, sampleShape(shape)]))
+  private readonly samples = new Map([...shapes, ...jewelPresets].map(shape => [shape.id, sampleShape(shape)]))
   palette = 0
 
-  constructor(ui: InterfaceElements, camera: SandCamera, solver: SandSolver, cancelDrawing: () => void) {
+  constructor(ui: InterfaceElements, camera: SandCamera, solver: SandSolver, jewels: JewelCollection, cancelDrawing: () => void) {
     this.ui = ui
     const { signal } = this.abort
     const preview = ui.root.querySelector<SVGSVGElement>('.stamp-preview')!
     const menu = new ToolsMenu(ui, () => {
       cancelDrawing()
+      this.cancelPlacement()
       const wasPlacing = this.activePointer !== undefined
       this.activePointer = undefined
       preview.setAttribute('hidden', '')
@@ -35,17 +39,20 @@ export class PlayController {
     }, signal)
     const hint = (message: string) => { ui.hint.textContent = message }
     const closeDrawer = () => { ui.drawer.hidden = true; ui.shapes.setAttribute('aria-expanded', 'false') }
-    const select = (shape?: Shape) => {
+    const select = (shape?: Shape | JewelPreset) => {
       this.clearShapeTimeout()
       if (this.interactive) cancelDrawing()
+      this.cancelPlacement()
       this.selected = shape
       this.activePointer = undefined
       preview.setAttribute('hidden', '')
       ui.draw.classList.toggle('selected', !shape)
       ui.draw.setAttribute('aria-pressed', String(!shape))
-      ui.shapes.classList.toggle('selected', !!shape)
+      ui.shapes.classList.toggle('selected', !!shape && !('kind' in shape))
+      ui.jewels.classList.toggle('selected', !!shape && 'kind' in shape)
+      ui.root.querySelectorAll<HTMLButtonElement>('[data-jewel]').forEach(button => button.setAttribute('aria-pressed', String(button.dataset.jewel === shape?.id)))
       ui.root.querySelectorAll<HTMLButtonElement>('[data-shape]').forEach(button => button.setAttribute('aria-pressed', String(button.dataset.shape === shape?.id)))
-      hint(shape ? `${shape.name.toLowerCase()} wishes ♡ tap or drag on the sand` : 'Draw something fleeting.')
+      hint(shape ? `${shape.name} ♡ tap or drag to place` : 'Draw something fleeting.')
       this.armShapeTimeout()
     }
     this.returnToDraw = () => select()
@@ -57,6 +64,11 @@ export class PlayController {
     this.motion = new PhoneMotion(shake)
     ui.shake.addEventListener('click', () => { shake(); menu.close() }, { signal })
     ui.reset.addEventListener('click', () => menu.close(), { signal })
+    const updateCount = () => { ui.root.querySelector('#jewel-count')!.textContent = `${jewels.items.length} / 24 treasures` }
+    ui.jewels.addEventListener('click', () => { closeDrawer(); ui.jewelDrawer.hidden = !ui.jewelDrawer.hidden; ui.jewels.setAttribute('aria-expanded', String(!ui.jewelDrawer.hidden)); updateCount() }, { signal })
+    ui.root.querySelector('#close-jewels')!.addEventListener('click', () => { ui.jewelDrawer.hidden = true; ui.jewels.setAttribute('aria-expanded', 'false') }, { signal })
+    ui.root.querySelector('#clear-jewels')!.addEventListener('click', () => { jewels.clear(); updateCount(); hint('A little room for new treasures.') }, { signal })
+    ui.root.querySelectorAll<HTMLButtonElement>('[data-jewel]').forEach(button => button.addEventListener('click', () => { select(jewelPresets.find(jewel => jewel.id === button.dataset.jewel)); menu.close() }, { signal }))
     ui.motion.addEventListener('click', () => {
       ui.motion.disabled = true
       void this.motion.toggle().then(enabled => {
@@ -69,6 +81,8 @@ export class PlayController {
     }, { signal })
     ui.draw.addEventListener('click', () => { select(); closeDrawer(); menu.close() }, { signal })
     ui.shapes.addEventListener('click', () => {
+      ui.jewelDrawer.hidden = true
+      ui.jewels.setAttribute('aria-expanded', 'false')
       ui.drawer.hidden = !ui.drawer.hidden
       ui.shapes.setAttribute('aria-expanded', String(!ui.drawer.hidden))
     }, { signal })
@@ -89,11 +103,15 @@ export class PlayController {
       try { localStorage.setItem('pinku-palette', String(this.palette)) } catch { /* Storage is optional. */ }
     }, { signal }))
     const cancel = () => {
+      this.dragging = undefined
+      const pointer = this.activePointer
       const wasPlacing = this.activePointer !== undefined
       this.activePointer = undefined
       preview.setAttribute('hidden', '')
+      if (pointer !== undefined && ui.canvas.hasPointerCapture(pointer)) ui.canvas.releasePointerCapture(pointer)
       if (wasPlacing) this.armShapeTimeout()
     }
+    this.cancelPlacement = cancel
     window.addEventListener('focus', () => this.expireIdleShape(), { signal })
     window.addEventListener('blur', cancel, { signal })
     window.addEventListener('resize', cancel, { signal })
@@ -110,7 +128,7 @@ export class PlayController {
       // Project the shape through the same camera mapping as its sand contacts.
       const center = locate(event)
       const rect = ui.canvas.getBoundingClientRect()
-      const size = Number(ui.stampSize.value) / 1000
+      const size = 'kind' in this.selected ? 0.016 : Number(ui.stampSize.value) / 1000
       const project = (point: { x: number; y: number }) => {
         const world = [center.x + point.x * size - camera.eye[0], SAND.depth - camera.eye[1], center.y + point.y * size - camera.eye[2]]
         const dot = (axis: readonly number[]) => world.reduce((sum, value, i) => sum + value * axis[i], 0)
@@ -127,7 +145,15 @@ export class PlayController {
     }
     ui.canvas.addEventListener('pointerdown', event => {
       this.expireIdleShape()
-      if (!this.selected) return
+      if (this.activePointer !== undefined) { event.stopImmediatePropagation(); event.preventDefault(); return }
+      if (event.pointerType === 'mouse' && event.button !== 0) return
+      if (!this.selected && this.interactive) {
+        const rect = ui.canvas.getBoundingClientRect()
+        const hit = jewels.hit(camera, { x: event.clientX - rect.left, y: event.clientY - rect.top }, rect.width, rect.height)
+        if (hit) cancelDrawing()
+        this.dragging = hit
+      }
+      if (!this.selected && !this.dragging) return
       event.stopImmediatePropagation(); event.preventDefault()
       if (!this.interactive || this.activePointer !== undefined || (event.pointerType === 'mouse' && event.button !== 0)) return
       this.clearShapeTimeout()
@@ -136,18 +162,25 @@ export class PlayController {
       showPreview(event)
     }, { signal, capture: true })
     ui.canvas.addEventListener('pointermove', event => {
-      if (!this.selected) return
+      if (!this.selected && !this.dragging) return
       event.stopImmediatePropagation()
+      if (this.dragging && this.activePointer === event.pointerId) jewels.move(this.dragging, locate(event))
       if (this.interactive && (this.activePointer === event.pointerId || (this.activePointer === undefined && event.pointerType === 'mouse'))) showPreview(event)
     }, { signal, capture: true })
     ui.canvas.addEventListener('pointerup', event => {
-      if (!this.selected) return
+      if (!this.selected && !this.dragging) return
       event.stopImmediatePropagation()
       if (this.activePointer !== event.pointerId) return
-      if (this.interactive) {
-        // Bound queued work so rapid stamping cannot create a seconds-long backlog.
-        if (this.pending.length < 240) this.pending.push(...stampStrokes(this.samples.get(this.selected.id)!, locate(event), Number(ui.stampSize.value) / 1000))
-        hint(`${this.selected.name.toLowerCase()} pressed into pink ♡`)
+      if (this.interactive && this.selected) {
+        if ('kind' in this.selected) {
+          const jewel = jewels.add(this.selected, locate(event), 0.016)
+          hint(jewel ? `${this.selected.name} catches the light ✧` : '24 treasures already! Clear gems to make room.')
+          updateCount()
+        } else {
+          // Bound queued work so rapid stamping cannot create a seconds-long backlog.
+          if (this.pending.length < 240) this.pending.push(...stampStrokes(this.samples.get(this.selected.id)!, locate(event), Number(ui.stampSize.value) / 1000))
+          hint(`${this.selected.name.toLowerCase()} pressed into pink ♡`)
+        }
       }
       if (ui.canvas.hasPointerCapture(event.pointerId)) ui.canvas.releasePointerCapture(event.pointerId)
       cancel()
@@ -180,6 +213,7 @@ export class PlayController {
     if (!value) {
       this.clearShapeTimeout()
       if (this.selected) this.returnToDraw()
+      this.cancelPlacement()
       this.pending = []; this.activePointer = undefined
       this.ui.root.querySelector<SVGSVGElement>('.stamp-preview')!.setAttribute('hidden', '')
     }

@@ -1,4 +1,5 @@
 import { INTRO_TITLE } from '../render/markings'
+import { jewelPresets } from '../play/jewels'
 import { shapes } from '../play/shapes'
 export type InterfaceElements = ReturnType<typeof createInterface>
 
@@ -18,9 +19,18 @@ export function createInterface(root: HTMLDivElement) {
         <label class="size-label">Stamp size <input id="stamp-size" type="range" min="18" max="55" value="32" aria-label="Stamp size"></label>
         <p>Pick a shape, then tap the sand. Drag to place it just right.</p>
       </div>
+      <div class="drawer" id="jewel-drawer" hidden>
+        <div class="shapes jewels" role="group" aria-label="Kira kira wheel">${jewelPresets.map((jewel, index) => {
+          const angle = (index * 90 - 90) * Math.PI / 180
+          return `<button type="button" data-jewel="${jewel.id}" aria-pressed="false" style="--x:${Math.cos(angle) * 37}%;--y:${Math.sin(angle) * 37}%"><svg viewBox="-1.5 -1.5 3 3" aria-hidden="true"><path d="${jewel.path}" /></svg><span>${jewel.name}</span></button>`
+        }).join('')}<button id="close-jewels" class="wheel-center" aria-label="Hide Kira kira wheel"><span aria-hidden="true">✧</span><span>kira kira</span></button></div>
+        <button id="clear-jewels">Clear gems</button><p id="jewel-count">0 / 24 treasures</p>
+        <p>Tap to drop a treasure. In Draw, drag it to move it.</p>
+      </div>
       <nav class="toolbar" aria-label="Play tools">
         <button id="draw" class="selected" aria-pressed="true"><span aria-hidden="true">〰</span>Draw</button>
         <button id="shapes" aria-expanded="true" aria-controls="drawer"><span aria-hidden="true">♡</span>Shapes</button>
+        <button id="jewels" aria-expanded="false" aria-controls="jewel-drawer"><span aria-hidden="true">✦</span>Kira kira</button>
         <button id="shake"><span aria-hidden="true">✧</span>Shake</button>
         <button id="reset"><span aria-hidden="true">↻</span>Fresh sand</button>
       </nav>
@@ -47,6 +57,7 @@ export function createInterface(root: HTMLDivElement) {
     tools: element<HTMLDialogElement>('#tool-dialog'), cog: element<HTMLButtonElement>('#sand-cog'),
     hint: element<HTMLElement>('#hint'), drawer: element<HTMLElement>('#drawer'),
     draw: element<HTMLButtonElement>('#draw'), shapes: element<HTMLButtonElement>('#shapes'),
+    jewels: element<HTMLButtonElement>('#jewels'), jewelDrawer: element<HTMLElement>('#jewel-drawer'),
     shake: element<HTMLButtonElement>('#shake'), motion: element<HTMLButtonElement>('#motion'),
     fullscreen: element<HTMLButtonElement>('#fullscreen'), stampSize: element<HTMLInputElement>('#stamp-size'),
   }

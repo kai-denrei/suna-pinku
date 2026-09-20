@@ -13,6 +13,13 @@ export class SandCamera {
   readonly distance = Math.hypot(this.eye[1] - SAND.depth, this.eye[2])
   aspect = 1
   get tanHalfFov() { return 0.22 / this.distance / Math.max(1, this.aspect) }
+  bedToScreen(point: Point, width: number, height: number, elevation: number = SAND.depth): Point {
+    const relative = [point.x - this.eye[0], elevation - this.eye[1], point.y - this.eye[2]]
+    const dot = (axis: Vector3) => relative.reduce((sum, value, i) => sum + value * axis[i], 0)
+    const depth = dot(this.forward)
+    return { x: (dot(this.right) / (depth * this.tanHalfFov * this.aspect) + 1) * width / 2,
+      y: (1 - dot(this.up) / (depth * this.tanHalfFov)) * height / 2 }
+  }
   screenToBed(clientX: number, clientY: number, width: number, height: number): Point {
     const horizontal = (2 * clientX / width - 1) * this.tanHalfFov * this.aspect
     const vertical = (1 - 2 * clientY / height) * this.tanHalfFov
