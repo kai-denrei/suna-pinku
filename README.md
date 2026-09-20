@@ -2,7 +2,7 @@
 
 A pocket-sized pink sand garden, built on [Sandboard](https://github.com/scottstts/Sandboard) by scottstts.
 
-Draw with multiple fingers, press heart, star, unicorn, bunny, flower, bow, cat, and dog imprints into the sand, and shake them apart. Choose sakura, candy, or lilac pink. Tap the small cog impressed into the sand to open the radial shape selector and tools. The Kira kira wheel adds draggable rose quartz, heart gems, star charms, and pearls with soft sparkles. Portrait and landscape layouts adapt automatically. The cog survives resets. “Cuteness Impermanence” appears as an opening sand inscription, then disappears. Tools include adjustable brush/stamp sizes, a fresh-sand wash, fullscreen, and optional phone motion.
+Draw with multiple fingers, press heart, star, unicorn, bunny, flower, bow, cat, and dog imprints into the sand, then wash them away. Choose sakura, candy, or lilac pink. Tap the small cog impressed into the sand to open the radial shape selector and tools. The Kira kira wheel adds draggable rose quartz, heart gems, star charms, and pearls with soft sparkles, weighted landings, and real sand impressions. Portrait and landscape layouts adapt automatically. The cog survives resets. “Cuteness Impermanence” appears as an opening sand inscription, then disappears. Tools include adjustable brush/stamp sizes, a droplet brush that wets and darkens sand, a fresh-sand wash, and fullscreen.
 
 ## Run locally
 
@@ -11,7 +11,7 @@ npm ci
 npm run dev
 ```
 
-The sandbox requires hardware WebGPU. Use Safari on iOS 26+ or a compatible current desktop browser. Phone motion and PWA installation need a secure context; testing from another device requires HTTPS, not an ordinary HTTP LAN address.
+The sandbox requires hardware WebGPU. Use Safari on iOS 26+ or a compatible current desktop browser. PWA installation needs a secure context; testing from another device requires HTTPS, not an ordinary HTTP LAN address.
 
 ## Offline app
 
@@ -24,7 +24,7 @@ Open the production preview, wait for “Ready for offline play” in **Keep me*
 
 ## Roadmap
 
-Future sparkle effects, shiny rocks and gems, and a Japanese stamp wheel are tracked in [ROADMAP.md](ROADMAP.md). These are ideas, not current features.
+Additional sparkle effects, polished stones, message links, and a Japanese stamp wheel are tracked in [ROADMAP.md](ROADMAP.md).
 
 ## Publishing
 

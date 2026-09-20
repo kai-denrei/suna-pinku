@@ -37,3 +37,18 @@ describe('treasures', () => {
     }
   })
 })
+
+test('gem weight begins after landing, suspends while held, and shares a bounded contact budget', () => {
+  const jewels = new JewelCollection()
+  const gem = jewels.add(jewelPresets[0], { x: 0, y: 0 }, 0.016)!
+  expect(jewels.contacts(4, gem.droppedAt)).toHaveLength(0)
+  const landed = jewels.contacts(4, gem.droppedAt + 1)
+  expect(landed).toHaveLength(1)
+  expect(landed[0].pressure).toBeGreaterThan(0)
+  jewels.lift(gem)
+  expect(jewels.contacts(4, gem.droppedAt + 2)).toHaveLength(0)
+  jewels.release(gem)
+  for (let i = 0; i < 20; i++) jewels.add(jewelPresets[i % 4], { x: i * 0.01, y: 0 }, 0.016)
+  expect(jewels.contacts(4, performance.now() / 1000 + 2)).toHaveLength(4)
+  expect(jewels.contacts(0)).toHaveLength(0)
+})

@@ -1,3 +1,4 @@
+import { sizeSurface } from './platform/surface-viewport'
 import { PlayController } from './play/controller'
 import { SandSound } from './audio/sound'
 import { SAND, idleStroke } from './config'
@@ -30,6 +31,7 @@ export async function startSandboard(ui: InterfaceElements, monitor: BootMonitor
   let resetPending = false
   let waveResetInteractive = false
   let waveResetNeedsTransientClear = false
+  let clearWetnessAtCrest = false
   const singleFrameResetPacing = useSingleFrameResetPacing()
   const resetFrameBudget = singleFrameResetPacing ? 1 : 2
   const waveReset = new WaveResetEffect()
@@ -54,19 +56,20 @@ export async function startSandboard(ui: InterfaceElements, monitor: BootMonitor
   monitor.setStop(stop)
   const resize = () => {
     if (!resizePending) return
-    const size = drawingBuffer(window.innerWidth, window.innerHeight, window.devicePixelRatio)
+    const surface = sizeSurface(ui.root, ui.canvas)
+    const size = drawingBuffer(surface.width, surface.height, window.devicePixelRatio)
     if (!size) return
     resizePending = false
     input?.setInteractive(false)
     if (!waveResetInteractive) input?.setInteractive(true)
     play?.cancelPlacement()
     sound.cancelAll()
-    ui.root.dataset.orientation = window.innerWidth > window.innerHeight ? 'landscape' : 'portrait'
+    ui.root.dataset.orientation = surface.width > surface.height ? 'landscape' : 'portrait'
     ui.canvas.width = size.width; ui.canvas.height = size.height
     renderer.resize(size.width, size.height)
-    renderer.jewels.fitViewport(renderer.camera, window.innerWidth, window.innerHeight)
+    renderer.jewels.fitViewport(renderer.camera, surface.width, surface.height)
     const cog = ui.cog.getBoundingClientRect()
-    renderer.markings.layout(renderer.camera, window.innerWidth, window.innerHeight, cog.x + cog.width / 2, cog.y + cog.height / 2)
+    renderer.markings.layout(renderer.camera, surface.width, surface.height, cog.x + cog.width / 2 - surface.x, cog.y + cog.height / 2 - surface.y)
   }
   try {
     monitor.stage('Initializing sand transport')
@@ -86,7 +89,7 @@ export async function startSandboard(ui: InterfaceElements, monitor: BootMonitor
     renderer.reducedMotion = reducedMotion.matches
     reducedMotion.addEventListener('change', () => { renderer.reducedMotion = reducedMotion.matches }, { signal: listeners.signal })
     renderer.markings.start(performance.now(), window.matchMedia('(prefers-reduced-motion: reduce)').matches)
-    play = new PlayController(ui, renderer.camera, solver, renderer.jewels, () => {
+    play = new PlayController(ui, renderer.camera, solver, renderer.jewels, renderer.wetSand.field, () => {
       input?.setInteractive(false); input?.setInteractive(true); sound.cancelAll()
     })
     input = new InputController(ui, renderer.camera, sound, () => { resetPending = true })
@@ -112,12 +115,14 @@ export async function startSandboard(ui: InterfaceElements, monitor: BootMonitor
           sound.cancelAll()
           waveReset.start(now, sound.playResetWave(), waveResetViewport(renderer.camera))
           waveResetNeedsTransientClear = true
+          clearWetnessAtCrest = true
           clock.reset()
           setToolbarInteractive(false)
         }
         const encoder = gpu.device.createCommandEncoder()
         const activeInput = input!
         const waveState = waveReset.update(now)
+        if (clearWetnessAtCrest && !waveState.incoming) { renderer.wetSand.field.clear(); clearWetnessAtCrest = false }
         if (waveResetInteractive) {
           clock.reset()
           if (waveResetNeedsTransientClear) {

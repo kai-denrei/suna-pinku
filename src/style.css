@@ -16,7 +16,7 @@ body,
 #app {
   width: 100%;
   height: 100%;
-  height: 100dvh;
+  height: var(--surface-height, 100dvh);
 }
 body {
   margin: 0;
@@ -51,9 +51,10 @@ button:disabled {
 }
 .surface {
   position: fixed;
-  inset: 0;
-  width: 100%;
-  height: 100%;
+  top: 0;
+  left: 0;
+  width: 100vw;
+  height: var(--surface-height, 100dvh);
   touch-action: none;
   cursor: crosshair;
   user-select: none;
@@ -492,4 +493,13 @@ dialog h2 {
   padding: 0 18px;
   background: #fce1ed;
   font-size: 11px;
+}
+
+#water svg {
+  width: 24px;
+  height: 26px;
+  fill: #f4bfd3;
+  stroke: currentColor;
+  stroke-width: 1.4;
+  stroke-linecap: round;
 }

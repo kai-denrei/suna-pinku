@@ -1,4 +1,4 @@
-import { jewelPresets } from '../src/play/jewels'
+import { JewelCollection, jewelPresets } from '../src/play/jewels'
 import { afterAll, beforeAll, expect, test } from 'vitest'
 import { create, globals } from 'webgpu'
 import { SAND, idleStroke, type Stroke } from '../src/config'
@@ -414,4 +414,60 @@ test('shake redistributes sand while conserving bed and airborne mass and respec
   step(solver, idleStroke(), 20)
   expect(errors).toEqual([])
   solver.dispose()
+})
+
+test('gem weight displaces sand into rims and conserves total mass', async () => {
+  const solver = new SandSolver(device, 256)
+  await solver.initialize()
+  try {
+    const jewels = new JewelCollection()
+    jewelPresets.forEach((preset, i) => jewels.add(preset, { x: (i - 1.5) * 0.07, y: 0 }, 0.022))
+    const initial = await readState(solver)
+    for (let i = 0; i < 240; i++) {
+      const encoder = device.createCommandEncoder()
+      solver.encode(encoder, [jewels.contacts(4, performance.now() / 1000 + 2)])
+      device.queue.submit([encoder.finish()])
+    }
+    const settled = await readState(solver)
+    expect(Math.abs((volume(settled) + await particleMass(solver)) / volume(initial) - 1)).toBeLessThan(0.000002)
+    let rim = 0
+    for (let i = 0; i < settled.length; i += 4) rim = Math.max(rim, settled[i] - initial[i])
+    expect(rim).toBeGreaterThan(0.0005)
+    for (const jewel of jewels.items) {
+      const x = Math.floor((jewel.position.x / SAND.extent + 0.5) * solver.resolution)
+      const index = (solver.resolution / 2 * solver.resolution + x) * 4
+      expect(initial[index] - settled[index]).toBeGreaterThan(0.001)
+    }
+    expect(errors).toEqual([])
+  } finally { solver.dispose() }
+})
+
+test('droplets darken the rendered sand and Fresh Sand clears the moisture', async () => {
+  const solver = new SandSolver(device, 128)
+  await solver.initialize()
+  const renderer = new SandRenderer(device, solver, 'rgba8unorm')
+  const texture = device.createTexture({ size: [256, 192], format: 'rgba8unorm', usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC })
+  const staging = device.createBuffer({ size: 256 * 192 * 4, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST })
+  const brightness = async () => {
+    const encoder = device.createCommandEncoder()
+    renderer.encode(encoder, texture.createView(), idleStroke(), 0)
+    encoder.copyTextureToBuffer({ texture }, { buffer: staging, bytesPerRow: 1024 }, [256, 192])
+    device.queue.submit([encoder.finish()])
+    await staging.mapAsync(GPUMapMode.READ)
+    const pixels = new Uint8Array(staging.getMappedRange())
+    let sum = 0
+    for (let y = 92; y < 100; y++) for (let x = 124; x < 132; x++) sum += pixels[(y * 256 + x) * 4]
+    staging.unmap()
+    return sum / 64
+  }
+  try {
+    await renderer.initialize(); renderer.resize(256, 192)
+    const dry = await brightness()
+    for (let i = 0; i < 4; i++) renderer.wetSand.field.drop({ x: 0, y: 0 }, -1000)
+    const wet = await brightness()
+    expect(wet).toBeLessThan(dry * 0.93)
+    renderer.wetSand.field.clear()
+    expect(await brightness()).toBeCloseTo(dry, 0)
+    expect(errors).toEqual([])
+  } finally { renderer.dispose(); solver.dispose(); texture.destroy(); staging.destroy() }
 })

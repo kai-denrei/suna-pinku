@@ -18,7 +18,10 @@ fn baseHeight(jewel: Jewel) -> f32 {
   let p = jewel.placement.xy;
   let r = jewel.placement.z * 0.6;
   let support = (heightAt(p + vec2f(r, 0.0)) + heightAt(p - vec2f(r, 0.0)) + heightAt(p + vec2f(0.0, r)) + heightAt(p - vec2f(0.0, r))) * 0.25;
-  return max(heightAt(p), support) - 0.0006;
+  let age = max(0.0, view.right.w - jewel.detail.y);
+  let fall = max(0.0, 0.045 - 0.9 * age * age);
+  let lift = select(fall, 0.025, jewel.detail.z > 0.5);
+  return mix(heightAt(p), support, 0.35) - 0.0015 + select(lift, 0.0, view.up.w > 0.5);
 }
 fn project(position: vec3f) -> vec4f {
   let relative = position - view.eye.xyz;
@@ -141,7 +144,7 @@ export class JewelRenderer {
     this.ranges = this.meshes.map((_, kind) => {
       const first = index
       for (const jewel of this.collection.items.filter(item => item.preset.kind === kind)) {
-        this.data.set([jewel.position.x, jewel.position.y, jewel.size, jewel.rotation, ...jewel.preset.color, kind, jewel.id, 0, 0, 0], index++ * 12)
+        this.data.set([jewel.position.x, jewel.position.y, jewel.size, jewel.rotation, ...jewel.preset.color, kind, jewel.id, jewel.droppedAt, jewel.held ? 1 : 0, 0], index++ * 12)
       }
       return { first, count: index - first }
     })

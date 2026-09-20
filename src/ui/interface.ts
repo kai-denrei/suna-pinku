@@ -31,13 +31,13 @@ export function createInterface(root: HTMLDivElement) {
         <button id="draw" class="selected" aria-pressed="true"><span aria-hidden="true">〰</span>Draw</button>
         <button id="shapes" aria-expanded="true" aria-controls="drawer"><span aria-hidden="true">♡</span>Shapes</button>
         <button id="jewels" aria-expanded="false" aria-controls="jewel-drawer"><span aria-hidden="true">✦</span>Kira kira</button>
-        <button id="shake"><span aria-hidden="true">✧</span>Shake</button>
+        <button id="water" aria-pressed="false"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2C10 6 5 11 5 15a7 7 0 0 0 14 0c0-4-5-9-7-13Z"/><path d="M8 15a4 4 0 0 0 4 4"/></svg>Water</button>
         <button id="reset"><span aria-hidden="true">↻</span>Fresh sand</button>
       </nav>
       <div class="settings">
         <label class="brush-label">Brush <input id="radius" type="range" min="6" max="22" value="12" aria-label="Brush size"></label>
         <div class="swatches" aria-label="Sand color"><button data-palette="0" class="swatch sakura" aria-label="Sakura pink" aria-pressed="true"></button><button data-palette="1" class="swatch candy" aria-label="Candy pink" aria-pressed="false"></button><button data-palette="2" class="swatch lilac" aria-label="Lilac pink" aria-pressed="false"></button></div>
-        <button id="motion" aria-pressed="false">Motion off</button>
+
       </div>
       <div class="extra-tools"><button id="install" type="button">♡ Keep me</button><button id="fullscreen" type="button" aria-label="Enter immersive view" aria-pressed="false">⛶ Full screen</button></div>
       <p class="hint" id="hint" role="status">Choose a shape, or draw something fleeting.</p>
@@ -58,7 +58,7 @@ export function createInterface(root: HTMLDivElement) {
     hint: element<HTMLElement>('#hint'), drawer: element<HTMLElement>('#drawer'),
     draw: element<HTMLButtonElement>('#draw'), shapes: element<HTMLButtonElement>('#shapes'),
     jewels: element<HTMLButtonElement>('#jewels'), jewelDrawer: element<HTMLElement>('#jewel-drawer'),
-    shake: element<HTMLButtonElement>('#shake'), motion: element<HTMLButtonElement>('#motion'),
+    water: element<HTMLButtonElement>('#water'),
     fullscreen: element<HTMLButtonElement>('#fullscreen'), stampSize: element<HTMLInputElement>('#stamp-size'),
   }
 }

@@ -1,3 +1,4 @@
+import { WetSand } from './wet-sand'
 import { JewelCollection } from '../play/jewels'
 import { JewelRenderer } from './jewels'
 import { SandMarkings } from './markings'
@@ -17,6 +18,7 @@ const LIGHT_DIRECTION = [Math.cos(LIGHT_ANGLE), 0.65, Math.sin(LIGHT_ANGLE)] as 
 
 export class SandRenderer {
   readonly camera = new SandCamera()
+  readonly wetSand: WetSand
   readonly markings: SandMarkings
   private markingsGroup!: GPUBindGroup
   palette = 0
@@ -45,6 +47,7 @@ export class SandRenderer {
   private readonly mobileGrainFiltering: boolean
   constructor(device: GPUDevice, solver: SandSolver, format: GPUTextureFormat, mobileGrainFiltering = false) {
     this.markings = new SandMarkings(device)
+    this.wetSand = new WetSand(device)
     this.device = device; this.solver = solver; this.mobileGrainFiltering = mobileGrainFiltering
     this.uniform = device.createBuffer({ label: 'Surface view', size: this.data.byteLength, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST })
     this.jewelRenderer = new JewelRenderer(device, solver, this.jewels, this.uniform)
@@ -79,6 +82,8 @@ export class SandRenderer {
     this.markingsGroup = this.device.createBindGroup({ layout: this.pipeline.getBindGroupLayout(1), entries: [
       { binding: 0, resource: { buffer: this.markings.uniform } },
       { binding: 1, resource: this.markings.texture.createView() },
+      { binding: 2, resource: this.wetSand.texture.createView() },
+      { binding: 3, resource: { buffer: this.wetSand.uniform } },
     ] })
     this.groups = this.solver.buffers.map((buffer) => this.device.createBindGroup({ layout: this.pipeline.getBindGroupLayout(0), entries: [
       { binding: 0, resource: { buffer: this.uniform } },
@@ -123,6 +128,7 @@ export class SandRenderer {
     if (!this.depth) throw new Error('Renderer needs a nonzero drawing buffer')
     // Pink studio lighting: the palm mask stays unused.
     this.markings.update(now)
+    this.wetSand.update()
     this.data.set([
       ...this.camera.eye, this.camera.tanHalfFov,
       ...this.camera.forward, this.camera.aspect,
@@ -160,5 +166,5 @@ export class SandRenderer {
     this.post.encode(encoder, target)
   }
 
-  dispose() { this.jewelRenderer.dispose(); this.markings.dispose(); this.lighting.dispose(); this.shadowTexture.destroy(); this.airborneShadow.dispose(); this.post.dispose(); this.uniform.destroy(); this.indices.destroy(); this.depth?.destroy() }
+  dispose() { this.wetSand.dispose(); this.jewelRenderer.dispose(); this.markings.dispose(); this.lighting.dispose(); this.shadowTexture.destroy(); this.airborneShadow.dispose(); this.post.dispose(); this.uniform.destroy(); this.indices.destroy(); this.depth?.destroy() }
 }

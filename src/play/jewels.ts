@@ -1,4 +1,4 @@
-import { SAND, type Point } from '../config'
+import { SAND, type Point, type Stroke } from '../config'
 import type { SandCamera } from '../render/camera'
 
 export const jewelPresets = [
@@ -8,16 +8,27 @@ export const jewelPresets = [
   { id: 'pearl', name: 'Pearl', kind: 3, color: [1, 0.82, 0.91], path: 'M -0.85 0 A .85 .85 0 1 0 .85 0 A .85 .85 0 1 0 -.85 0 Z' },
 ] as const
 export type JewelPreset = typeof jewelPresets[number]
-export type Jewel = { id: number; preset: JewelPreset; position: Point; size: number; rotation: number }
+export type Jewel = { id: number; preset: JewelPreset; position: Point; size: number; rotation: number; droppedAt: number; held: boolean }
 export const MAX_JEWELS = 24
+
+const footprints = [
+  [{ x: 0, y: 0, radius: 0.87 }],
+  [{ x: -0.34, y: -0.15, radius: 0.65 }, { x: 0.34, y: -0.15, radius: 0.65 }, { x: 0, y: 0.35, radius: 0.48 }],
+  [{ x: 0, y: 0, radius: 0.58 }, ...Array.from({ length: 5 }, (_, i) => ({ x: Math.sin(i * Math.PI * 0.4) * 0.50, y: -Math.cos(i * Math.PI * 0.4) * 0.50, radius: 0.40 }))],
+  [{ x: 0, y: 0, radius: 0.64 }],
+]
+const weights = [0.30, 0.24, 0.18, 0.34]
 
 export class JewelCollection {
   readonly items: Jewel[] = []
   revision = 0
   private sequence = 0
+  private contactCursor = 0
+  private contactRevision = -1
+  private contactCache: { jewel: Jewel; stroke: Stroke }[] = []
   add(preset: JewelPreset, position: Point, size: number): Jewel | undefined {
     if (this.items.length >= MAX_JEWELS) return
-    const jewel = { id: ++this.sequence, preset, position: { ...position }, size: Math.min(0.028, Math.max(0.009, size)), rotation: (this.sequence % 7 - 3) * 0.09 }
+    const jewel = { id: ++this.sequence, preset, position: { ...position }, size: Math.min(0.028, Math.max(0.009, size)), rotation: (this.sequence % 7 - 3) * 0.09, droppedAt: performance.now() / 1000, held: false }
     this.move(jewel, position)
     this.items.push(jewel)
     return jewel
@@ -27,6 +38,33 @@ export class JewelCollection {
     jewel.position = { x: Math.max(-limit, Math.min(limit, position.x)), y: Math.max(-limit, Math.min(limit, position.y)) }
     this.revision++
   }
+  lift(jewel: Jewel) { jewel.held = true; this.revision++ }
+  release(jewel: Jewel) { jewel.held = false; jewel.droppedAt = performance.now() / 1000; this.revision++ }
+  contacts(limit: number, now = performance.now() / 1000): Stroke[] {
+    if (limit <= 0) return []
+    if (this.contactRevision !== this.revision) {
+      this.contactRevision = this.revision
+      this.contactCache = this.items.flatMap(jewel => {
+        const c = Math.cos(jewel.rotation), s = Math.sin(jewel.rotation)
+        return footprints[jewel.preset.kind].map(point => {
+          const position = { x: jewel.position.x + (point.x * c - point.y * s) * jewel.size, y: jewel.position.y + (point.x * s + point.y * c) * jewel.size }
+          return { jewel, stroke: { from: position, to: position, velocity: { x: 0, y: 0 }, radius: jewel.size * point.radius, pressure: weights[jewel.preset.kind], active: true } }
+        })
+      })
+    }
+    const batch: Stroke[] = []
+    // Rotate a fixed contact budget through cached footprints; never allocate or
+    // upload all 24 objects' contact geometry on each simulation step.
+    for (let visited = 0; visited < this.contactCache.length && batch.length < limit; visited++) {
+      const entry = this.contactCache[this.contactCursor % this.contactCache.length]
+      this.contactCursor = (this.contactCursor + 1) % this.contactCache.length
+      const age = now - entry.jewel.droppedAt - 0.224
+      if (entry.jewel.held || age < 0) continue
+      batch.push({ ...entry.stroke, pressure: entry.stroke.pressure + 0.16 * Math.exp(-age * 14) })
+    }
+    return batch
+  }
+
   clear() { this.items.length = 0; this.revision++ }
   hit(camera: SandCamera, point: Point, width: number, height: number) {
     for (const jewel of [...this.items].reverse()) {

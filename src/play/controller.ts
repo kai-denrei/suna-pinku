@@ -4,13 +4,16 @@ import type { SandCamera } from '../render/camera'
 import type { SandSolver } from '../simulation/solver'
 import type { InterfaceElements } from '../ui/interface'
 import { JewelCollection, jewelPresets, type Jewel, type JewelPreset } from './jewels'
-import { PhoneMotion } from './motion'
+import { WaterBrush } from './water-brush'
+import type { WetnessField } from './wetness'
 import { shapes, sampleShape, stampStrokes, type Shape } from './shapes'
 
 export class PlayController {
   private readonly abort = new AbortController()
-  private readonly motion: PhoneMotion
+  private waterMode = false
+  private readonly waterBrush: WaterBrush
   private readonly ui: InterfaceElements
+  private readonly jewels: JewelCollection
   private selected: Shape | JewelPreset | undefined
   private dragging: Jewel | undefined
   cancelPlacement: () => void = () => {}
@@ -24,9 +27,11 @@ export class PlayController {
   private readonly samples = new Map([...shapes, ...jewelPresets].map(shape => [shape.id, sampleShape(shape)]))
   palette = 0
 
-  constructor(ui: InterfaceElements, camera: SandCamera, solver: SandSolver, jewels: JewelCollection, cancelDrawing: () => void) {
+  constructor(ui: InterfaceElements, camera: SandCamera, solver: SandSolver, jewels: JewelCollection, wetness: WetnessField, cancelDrawing: () => void) {
     this.ui = ui
+    this.jewels = jewels
     const { signal } = this.abort
+    this.waterBrush = new WaterBrush(ui.canvas, camera, wetness, () => this.waterMode && this.interactive, cancelDrawing, signal)
     const preview = ui.root.querySelector<SVGSVGElement>('.stamp-preview')!
     const menu = new ToolsMenu(ui, () => {
       cancelDrawing()
@@ -41,6 +46,10 @@ export class PlayController {
     const closeDrawer = () => { ui.drawer.hidden = true; ui.shapes.setAttribute('aria-expanded', 'false') }
     const select = (shape?: Shape | JewelPreset) => {
       this.clearShapeTimeout()
+      this.waterMode = false
+      this.waterBrush.cancel()
+      ui.water.classList.remove('selected')
+      ui.water.setAttribute('aria-pressed', 'false')
       if (this.interactive) cancelDrawing()
       this.cancelPlacement()
       this.selected = shape
@@ -56,29 +65,22 @@ export class PlayController {
       this.armShapeTimeout()
     }
     this.returnToDraw = () => select()
-    const shake = (strength = 1) => {
-      if (!this.interactive || document.hidden) return
-      solver.shake(strength)
-      hint('a little shake, a little sparkle ✧')
-    }
-    this.motion = new PhoneMotion(shake)
-    ui.shake.addEventListener('click', () => { shake(); menu.close() }, { signal })
+    ui.water.addEventListener('click', () => {
+      select()
+      this.waterMode = true
+      ui.water.classList.add('selected')
+      ui.water.setAttribute('aria-pressed', 'true')
+      ui.draw.classList.remove('selected')
+      ui.draw.setAttribute('aria-pressed', 'false')
+      hint('Tap for a droplet. Hold or drag to sprinkle the sand.')
+      menu.close()
+    }, { signal })
     ui.reset.addEventListener('click', () => menu.close(), { signal })
     const updateCount = () => { ui.root.querySelector('#jewel-count')!.textContent = `${jewels.items.length} / 24 treasures` }
     ui.jewels.addEventListener('click', () => { closeDrawer(); ui.jewelDrawer.hidden = !ui.jewelDrawer.hidden; ui.jewels.setAttribute('aria-expanded', String(!ui.jewelDrawer.hidden)); updateCount() }, { signal })
     ui.root.querySelector('#close-jewels')!.addEventListener('click', () => { ui.jewelDrawer.hidden = true; ui.jewels.setAttribute('aria-expanded', 'false') }, { signal })
     ui.root.querySelector('#clear-jewels')!.addEventListener('click', () => { jewels.clear(); updateCount(); hint('A little room for new treasures.') }, { signal })
     ui.root.querySelectorAll<HTMLButtonElement>('[data-jewel]').forEach(button => button.addEventListener('click', () => { select(jewelPresets.find(jewel => jewel.id === button.dataset.jewel)); menu.close() }, { signal }))
-    ui.motion.addEventListener('click', () => {
-      ui.motion.disabled = true
-      void this.motion.toggle().then(enabled => {
-        if (this.disposed) { this.motion.dispose(); return }
-        ui.motion.textContent = enabled ? 'Motion on ♡' : 'Motion off'
-        ui.motion.setAttribute('aria-pressed', String(enabled))
-        hint(enabled ? 'give your phone a gentle shake ✧' : 'shake with the button whenever you like ♡')
-      }).catch((error: unknown) => hint(error instanceof Error ? error.message : 'Motion unavailable. Use Shake ♡'))
-        .finally(() => { ui.motion.disabled = false })
-    }, { signal })
     ui.draw.addEventListener('click', () => { select(); closeDrawer(); menu.close() }, { signal })
     ui.shapes.addEventListener('click', () => {
       ui.jewelDrawer.hidden = true
@@ -103,6 +105,8 @@ export class PlayController {
       try { localStorage.setItem('pinku-palette', String(this.palette)) } catch { /* Storage is optional. */ }
     }, { signal }))
     const cancel = () => {
+      this.waterBrush.cancel()
+      if (this.dragging) jewels.release(this.dragging)
       this.dragging = undefined
       const pointer = this.activePointer
       const wasPlacing = this.activePointer !== undefined
@@ -152,6 +156,7 @@ export class PlayController {
         const hit = jewels.hit(camera, { x: event.clientX - rect.left, y: event.clientY - rect.top }, rect.width, rect.height)
         if (hit) cancelDrawing()
         this.dragging = hit
+        if (hit) jewels.lift(hit)
       }
       if (!this.selected && !this.dragging) return
       event.stopImmediatePropagation(); event.preventDefault()
@@ -205,18 +210,19 @@ export class PlayController {
     if (this.selected && this.activePointer === undefined && Date.now() >= this.shapeIdleDeadline) this.returnToDraw()
   }
   nextBatch(strokes: readonly Stroke[]) {
-    return [...strokes, ...this.pending.splice(0, Math.max(0, SAND.maxContacts - strokes.length))]
+    const batch = [...strokes, ...this.pending.splice(0, Math.max(0, SAND.maxContacts - strokes.length))]
+    return [...batch, ...this.jewels.contacts(Math.min(4, SAND.maxContacts - batch.length))]
   }
   setInteractive(value: boolean) {
     this.interactive = value
     this.ui.root.querySelectorAll<HTMLButtonElement | HTMLInputElement>('.toolbar button, .settings button, .settings input, .drawer button, .drawer input').forEach(control => { control.disabled = !value })
     if (!value) {
       this.clearShapeTimeout()
-      if (this.selected) this.returnToDraw()
+      if (this.selected || this.waterMode) this.returnToDraw()
       this.cancelPlacement()
       this.pending = []; this.activePointer = undefined
       this.ui.root.querySelector<SVGSVGElement>('.stamp-preview')!.setAttribute('hidden', '')
     }
   }
-  dispose() { this.disposed = true; this.clearShapeTimeout(); this.abort.abort(); this.motion.dispose(); this.pending = [] }
+  dispose() { this.disposed = true; this.clearShapeTimeout(); this.abort.abort(); this.waterBrush.cancel(); this.pending = [] }
 }

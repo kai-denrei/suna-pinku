@@ -1,8 +1,10 @@
+import { wetSandShader } from './wet-sand'
 import { markingsShader } from './markings'
 import { SAND } from '../config'
 
 export const surfaceShader = `
 ${markingsShader}
+${wetSandShader}
 struct View {
   eye: vec4f,
   forward: vec4f,
@@ -254,6 +256,7 @@ fn shadeSurface(input: VertexOutput, filteredCoordinate: vec2f, appearanceDetail
     inscriptionDepth(position - vec2f(0.0, reliefStep)) - inscriptionDepth(position + vec2f(0.0, reliefStep))) / (2.0 * reliefStep);
   let macroNormal = normalize(vec3f((heightLeft - heightRight) / (2.0 * spacing) + reliefGradient.x, 1.0,
     (heightBack - heightFront) / (2.0 * spacing) + reliefGradient.y));
+  let wetness = wetnessAt(position);
   let grain = grainAppearance(filteredCoordinate);
   let grainEdge = grain.edge;
   let roundness = grain.roundness;
@@ -263,7 +266,7 @@ fn shadeSurface(input: VertexOutput, filteredCoordinate: vec2f, appearanceDetail
   let radial = grain.axis * grain.shapedOffset.x + perpendicular * grain.shapedOffset.y;
   let facetJitter = (grain.materialSeed - 0.5) * 0.34;
   let facet = radial * (0.34 + roundness * 0.46) + facetJitter;
-  let normal = normalize(macroNormal + vec3f(facet.x, 0.0, facet.y) * appearanceDetail);
+  let normal = normalize(macroNormal + vec3f(facet.x, 0.0, facet.y) * appearanceDetail * (1.0 - wetness * 0.45));
   let displacedWorld = input.world + macroNormal * grainHeight + vec3f(0.0, inscriptionDepth(position), 0.0);
   let light = normalize(view.light.xyz);
   let towardEye = normalize(view.eye.xyz - displacedWorld);
@@ -279,8 +282,8 @@ fn shadeSurface(input: VertexOutput, filteredCoordinate: vec2f, appearanceDetail
   let material = materialForGrain(grain.materialSeed, composition);
   let microOcclusion = mix(1.0, mix(0.61, 1.0, grainEdge), appearanceDetail);
   let grainAlbedo = material.albedo * mix(0.64, 1.0, grainEdge);
-  let albedo = pinkPalette(mix(vec3f(0.85, 0.32, 0.49), grainAlbedo, appearanceDetail));
-  let roughness = mix(0.80, material.roughness, appearanceDetail);
+  let albedo = pinkPalette(mix(vec3f(0.85, 0.32, 0.49), grainAlbedo, appearanceDetail)) * mix(vec3f(1.0), vec3f(0.38, 0.23, 0.31), wetness);
+  let roughness = mix(mix(0.80, material.roughness, appearanceDetail), 0.22, wetness);
   let alphaSquared = pow(roughness, 4.0);
   let normalHalf = max(0.0, dot(normal, halfway));
   let distribution = microfacetDistribution(alphaSquared, normalHalf);
@@ -295,6 +298,7 @@ fn shadeSurface(input: VertexOutput, filteredCoordinate: vec2f, appearanceDetail
   let bodyTransmission = albedo * direct * material.translucency * (0.018 + 0.050 * (1.0 - viewCosine)) * roundness * appearanceDetail;
   let reflectiveGlint = reflectiveGlintAt(position, normal, towardEye, light, visibility, reflectivePixelWidth, material.sparkleAffinity);
   var radiance = albedo * (1.0 - 0.20 * max(letterMask(position), cogMask(position))) * (ambient + direct * diffuse) + direct * specular * cosine + environmentSpecular + bodyTransmission;
+  radiance += vec3f(1.0, 0.89, 0.97) * waterSplash(position);
   let ringDistance = abs(length(position - view.pointer.xy) - view.pointer.z);
   let ring = (1.0 - smoothstep(0.0003, 0.0008, ringDistance)) * view.pointer.w;
   radiance *= 1.0 - 0.2 * ring;
