@@ -75,7 +75,7 @@ fn corner(index: u32) -> vec2f {
   let uv = corner(index);
   let phase = view.right.w * 1.8 + jewel.detail.x * 2.4;
   let pulse = select(0.25 + 0.75 * pow(0.5 + 0.5 * sin(phase), 6.0), 0.42, view.up.w > 0.5);
-  let elevation = select(select(0.7, 0.52, jewel.color.w > 0.5), 1.55, jewel.color.w > 2.5);
+  let elevation = select(select(1.03, 0.58, jewel.color.w > 0.5), 1.70, jewel.color.w > 2.5);
   let center = vec3f(jewel.placement.x - jewel.placement.z * 0.20, baseHeight(jewel) + jewel.placement.z * elevation, jewel.placement.y);
   let world = center + (view.right.xyz * uv.x + view.up.xyz * uv.y) * jewel.placement.z * (0.32 + pulse * 0.4);
   return Quad(project(world), uv, pulse);
