@@ -3,7 +3,7 @@ import { SAND, type Stroke } from '../config'
 import type { SandCamera } from '../render/camera'
 import type { SandSolver } from '../simulation/solver'
 import type { InterfaceElements } from '../ui/interface'
-import { JewelCollection, jewelPresets, type Jewel, type JewelPreset } from './jewels'
+import { DEFAULT_JEWEL_SIZE, JewelCollection, jewelPresets, type Jewel, type JewelPreset } from './jewels'
 import { WaterBrush } from './water-brush'
 import type { WetnessField } from './wetness'
 import { shapes, sampleShape, stampStrokes, type Shape } from './shapes'
@@ -132,7 +132,7 @@ export class PlayController {
       // Project the shape through the same camera mapping as its sand contacts.
       const center = locate(event)
       const rect = ui.canvas.getBoundingClientRect()
-      const size = 'kind' in this.selected ? 0.016 : Number(ui.stampSize.value) / 1000
+      const size = 'kind' in this.selected ? DEFAULT_JEWEL_SIZE : Number(ui.stampSize.value) / 1000
       const project = (point: { x: number; y: number }) => {
         const world = [center.x + point.x * size - camera.eye[0], SAND.depth - camera.eye[1], center.y + point.y * size - camera.eye[2]]
         const dot = (axis: readonly number[]) => world.reduce((sum, value, i) => sum + value * axis[i], 0)
@@ -178,7 +178,7 @@ export class PlayController {
       if (this.activePointer !== event.pointerId) return
       if (this.interactive && this.selected) {
         if ('kind' in this.selected) {
-          const jewel = jewels.add(this.selected, locate(event), 0.016)
+          const jewel = jewels.add(this.selected, locate(event))
           hint(jewel ? `${this.selected.name} catches the light ✧` : '24 treasures already! Clear gems to make room.')
           updateCount()
         } else {
