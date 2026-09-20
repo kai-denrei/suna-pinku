@@ -21,7 +21,7 @@ export class SandRenderer {
   readonly wetSand: WetSand
   readonly markings: SandMarkings
   private markingsGroup!: GPUBindGroup
-  palette = 0
+  palette = 1
   reducedMotion = false
   readonly jewels = new JewelCollection()
   private readonly jewelRenderer: JewelRenderer

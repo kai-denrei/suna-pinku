@@ -1,21 +1,22 @@
 import { INTRO_TITLE } from '../render/markings'
 import { DEFAULT_JEWEL_SIZE, MIN_JEWEL_SIZE, MAX_JEWEL_SIZE, jewelPresets } from '../play/jewels'
-import { shapes } from '../play/shapes'
+import { cuteShapes, dinosaurShapes } from '../play/shapes'
 export type InterfaceElements = ReturnType<typeof createInterface>
 
 export function createInterface(root: HTMLDivElement) {
   root.innerHTML = `
-    <canvas class="surface" aria-label="Pink sand garden. Drag to draw. Arrow keys move a virtual finger; hold Space to draw. R resets." tabindex="0"></canvas>
+    <canvas class="surface" aria-label="Sand garden. Drag to draw. Arrow keys move a virtual finger; hold Space to draw. R resets." tabindex="0"></canvas>
     <h1 class="sr-only" id="intro-title">${INTRO_TITLE}</h1>
     <button id="sand-cog" aria-label="Open sand tools" aria-haspopup="dialog" aria-controls="tool-dialog" aria-expanded="false" title="Sand tools"></button>
     <dialog id="tool-dialog" class="toybox" aria-labelledby="tools-title">
       <header class="tools-heading"><h2 id="tools-title">Little rituals</h2><button id="close-tools" aria-label="Close sand tools">×</button></header>
       <div class="drawer" id="drawer">
 
-        <div class="shapes" role="group" aria-label="Shape wheel">${shapes.map((shape, index) => {
-          const angle = (index * 45 - 90) * Math.PI / 180
+        <div class="shape-sets" role="group" aria-label="Stamp collection"><button data-shape-set="cute" aria-pressed="true" aria-controls="cute-wheel">Cute</button><button data-shape-set="dinosaurs" aria-pressed="false" aria-controls="dinosaurs-wheel">Dinosaurs</button></div>
+        ${[{ id: 'cute', name: 'Cute shape wheel', shapes: cuteShapes }, { id: 'dinosaurs', name: 'Dinosaur shape wheel', shapes: dinosaurShapes }].map(set => `<div id="${set.id}-wheel" class="shapes" role="group" aria-label="${set.name}" ${set.id === 'cute' ? '' : 'hidden'}>${set.shapes.map((shape, index) => {
+          const angle = (index * 360 / set.shapes.length - 90) * Math.PI / 180
           return `<button type="button" data-shape="${shape.id}" aria-pressed="false" style="--x:${Math.cos(angle) * 37}%;--y:${Math.sin(angle) * 37}%"><svg viewBox="-1.5 -1.5 3 3" aria-hidden="true"><path d="${shape.path}" /></svg><span>${shape.name}</span></button>`
-        }).join('')}<button id="close-shapes" class="wheel-center" aria-label="Hide shape wheel"><span aria-hidden="true">♡</span><span>make a mark</span></button></div>
+        }).join('')}<button data-close-shapes class="wheel-center" aria-label="Hide shape wheel"><span aria-hidden="true">♡</span><span>make a mark</span></button></div>`).join('')}
         <label class="size-label">Stamp size <input id="stamp-size" type="range" min="18" max="55" value="32" aria-label="Stamp size"></label>
         <p>Pick a shape, then tap the sand. Drag to place it just right.</p>
       </div>
@@ -37,7 +38,7 @@ export function createInterface(root: HTMLDivElement) {
       </nav>
       <div class="settings">
         <label class="brush-label">Brush <input id="radius" type="range" min="6" max="22" value="12" aria-label="Brush size"></label>
-        <div class="swatches" aria-label="Sand color"><button data-palette="0" class="swatch sakura" aria-label="Sakura pink" aria-pressed="true"></button><button data-palette="1" class="swatch candy" aria-label="Candy pink" aria-pressed="false"></button><button data-palette="2" class="swatch lilac" aria-label="Lilac pink" aria-pressed="false"></button></div>
+        <div class="swatches" aria-label="Sand color"><button data-palette="1" class="swatch candy" aria-label="Bright pink" aria-pressed="true"></button><button data-palette="3" class="swatch natural" aria-label="Natural sand" aria-pressed="false"></button></div>
 
       </div>
       <div class="extra-tools"><button id="install" type="button">♡ Keep me</button><button id="fullscreen" type="button" aria-label="Enter immersive view" aria-pressed="false">⛶ Full screen</button></div>

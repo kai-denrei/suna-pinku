@@ -25,7 +25,7 @@ export class PlayController {
   private shapeIdleDeadline = Infinity
   private returnToDraw: () => void = () => {}
   private readonly samples = new Map([...shapes, ...jewelPresets].map(shape => [shape.id, sampleShape(shape)]))
-  palette = 0
+  palette = 1
 
   constructor(ui: InterfaceElements, camera: SandCamera, solver: SandSolver, jewels: JewelCollection, wetness: WetnessField, cancelDrawing: () => void) {
     this.ui = ui
@@ -88,7 +88,14 @@ export class PlayController {
       ui.drawer.hidden = !ui.drawer.hidden
       ui.shapes.setAttribute('aria-expanded', String(!ui.drawer.hidden))
     }, { signal })
-    ui.root.querySelector('#close-shapes')!.addEventListener('click', closeDrawer, { signal })
+    ui.root.querySelectorAll('[data-close-shapes]').forEach(button => button.addEventListener('click', closeDrawer, { signal }))
+    ui.root.querySelectorAll<HTMLButtonElement>('[data-shape-set]').forEach(button => button.addEventListener('click', () => {
+      ui.root.querySelectorAll<HTMLButtonElement>('[data-shape-set]').forEach(tab => {
+        const active = tab === button
+        tab.setAttribute('aria-pressed', String(active))
+        ui.root.querySelector<HTMLElement>(`#${tab.dataset.shapeSet}-wheel`)!.hidden = !active
+      })
+    }, { signal }))
     ui.root.querySelectorAll<HTMLButtonElement>('[data-shape]').forEach(button => {
       button.addEventListener('click', () => {
         select(shapes.find(shape => shape.id === button.dataset.shape))
@@ -99,7 +106,7 @@ export class PlayController {
       this.palette = palette
       ui.root.querySelectorAll<HTMLButtonElement>('[data-palette]').forEach(button => button.setAttribute('aria-pressed', String(Number(button.dataset.palette) === palette)))
     }
-    try { const saved = Number(localStorage.getItem('pinku-palette')); if ([0, 1, 2].includes(saved)) setPalette(saved) } catch { /* Storage is optional. */ }
+    try { const saved = Number(localStorage.getItem('pinku-palette')); setPalette(saved === 3 ? 3 : 1) } catch { /* Storage is optional. */ }
     ui.root.querySelectorAll<HTMLButtonElement>('[data-palette]').forEach(button => button.addEventListener('click', () => {
       setPalette(Number(button.dataset.palette))
       try { localStorage.setItem('pinku-palette', String(this.palette)) } catch { /* Storage is optional. */ }
@@ -184,7 +191,7 @@ export class PlayController {
         } else {
           // Bound queued work so rapid stamping cannot create a seconds-long backlog.
           if (this.pending.length < 240) this.pending.push(...stampStrokes(this.samples.get(this.selected.id)!, locate(event), Number(ui.stampSize.value) / 1000))
-          hint(`${this.selected.name.toLowerCase()} pressed into pink ♡`)
+          hint(`${this.selected.name.toLowerCase()} pressed into sand ♡`)
         }
       }
       if (ui.canvas.hasPointerCapture(event.pointerId)) ui.canvas.releasePointerCapture(event.pointerId)

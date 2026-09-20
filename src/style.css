@@ -280,14 +280,11 @@ dialog h2 {
   outline: 2px solid #aa416b;
   outline-offset: 2px;
 }
-.sakura {
-  background: #f7b5ce;
-}
 .candy {
   background: #f476ad;
 }
-.lilac {
-  background: #cba6e2;
+.natural {
+  background: #c9ac78;
 }
 #motion {
   min-height: 44px;
@@ -502,4 +499,21 @@ dialog h2 {
   stroke: currentColor;
   stroke-width: 1.4;
   stroke-linecap: round;
+}
+
+.shape-sets {
+  display: flex;
+  justify-content: center;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+.shape-sets button {
+  min-height: 44px;
+  padding: 0 16px;
+  border-radius: 22px;
+  background: transparent;
+  font-size: 12px;
+}
+.shape-sets [aria-pressed="true"] {
+  background: #f9c9dc;
 }

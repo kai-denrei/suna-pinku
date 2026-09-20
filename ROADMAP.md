@@ -6,7 +6,7 @@ These are future extensions; shipped features are noted below.
 - **More treasures:** polished stones, more gem cuts, and rolling/collision physics. The first Kira kira collection has shipped: rose quartz, heart gem, star charm, and pearl with animated highlights and weighted, sand-displacing landings.
 - **Japanese stamp wheel:** a second radial selector for the requested characters and words: **愛、猫、犬、柔術、姫、亀、海、鯨**. Preserve the exact forms, including multi-character 柔術, and check their readability as sand impressions.
 
-The shipped shape wheel currently includes Heart, Star, Unicorn, Bunny, Flower, Bow, Cat, and Dog. Future additions should keep the resting sandbox clear and accessible from the persistent sand cog.
+The shipped Cute wheel includes Heart, Star, Unicorn, Bunny, Flower, Bow, Cat, and Dog. The Dinosaurs wheel adds T. rex, Bronto, Stego, Tricera, cracked egg, and footprint. Future additions should keep the resting sandbox clear and accessible from the persistent sand cog.
 
 ## Possible iPhone interactions
 

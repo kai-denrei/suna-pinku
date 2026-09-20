@@ -139,38 +139,38 @@ struct SandMaterial {
 }
 fn materialForGrain(seed: vec2f, composition: f32) -> SandMaterial {
   let family = fract(seed.x + (composition - 0.5) * 0.085);
-  var albedo = vec3f(0.82, 0.26, 0.43);
+  var albedo = sandColor(vec3f(0.82, 0.26, 0.43), vec3f(0.67, 0.51, 0.30));
   var roughness = 0.50;
   var translucency = 0.09;
   var fresnelBase = 0.040;
   var sparkleAffinity = 0.50;
   if (family < 0.36) {
-    albedo = vec3f(0.94, 0.40, 0.58);
+    albedo = sandColor(vec3f(0.94, 0.40, 0.58), vec3f(0.72, 0.57, 0.35));
     roughness = 0.38;
     translucency = 0.17;
     sparkleAffinity = 0.72;
   } else if (family < 0.66) {
-    albedo = vec3f(0.82, 0.28, 0.47);
+    albedo = sandColor(vec3f(0.82, 0.28, 0.47), vec3f(0.65, 0.48, 0.27));
     roughness = 0.48;
     translucency = 0.10;
     sparkleAffinity = 0.48;
   } else if (family < 0.82) {
-    albedo = vec3f(1.0, 0.56, 0.68);
+    albedo = sandColor(vec3f(1.0, 0.56, 0.68), vec3f(0.75, 0.60, 0.38));
     roughness = 0.31;
     translucency = 0.21;
     sparkleAffinity = 0.64;
   } else if (family < 0.92) {
-    albedo = vec3f(0.70, 0.18, 0.36);
+    albedo = sandColor(vec3f(0.70, 0.18, 0.36), vec3f(0.54, 0.34, 0.18));
     roughness = 0.58;
     translucency = 0.035;
     sparkleAffinity = 0.20;
   } else if (family < 0.972) {
-    albedo = vec3f(0.59, 0.15, 0.30);
+    albedo = sandColor(vec3f(0.59, 0.15, 0.30), vec3f(0.43, 0.27, 0.15));
     roughness = 0.63;
     translucency = 0.02;
     sparkleAffinity = 0.12;
   } else {
-    albedo = vec3f(0.40, 0.10, 0.24);
+    albedo = sandColor(vec3f(0.40, 0.10, 0.24), vec3f(0.22, 0.17, 0.12));
     roughness = 0.69;
     translucency = 0.0;
     fresnelBase = 0.048;
@@ -181,13 +181,16 @@ fn materialForGrain(seed: vec2f, composition: f32) -> SandMaterial {
   roughness = clamp(roughness + (seed.y - 0.5) * 0.10, 0.24, 0.76);
   return SandMaterial(albedo, roughness, translucency, fresnelBase, sparkleAffinity);
 }
-fn pinkPalette(color: vec3f) -> vec3f {
-  let candy = color * vec3f(1.0, 0.62, 0.90);
-  let lilac = color * vec3f(0.78, 0.94, 1.42);
-  return mix(mix(color, candy, clamp(view.shadowControl.y, 0.0, 1.0)), lilac, clamp(view.shadowControl.y - 1.0, 0.0, 1.0));
+fn sandColor(pink: vec3f, natural: vec3f) -> vec3f {
+  return select(pink * vec3f(1.0, 0.62, 0.90), natural, view.shadowControl.y > 2.5);
 }
 fn environment(direction: vec3f) -> vec3f {
   let upward = max(direction.y, 0.0);
+  if (view.shadowControl.y > 2.5) {
+    let sky = mix(vec3f(0.72, 0.67, 0.57), vec3f(0.42, 0.56, 0.78), pow(upward, 0.45));
+    let ground = mix(vec3f(0.25, 0.19, 0.13), vec3f(0.52, 0.42, 0.29), smoothstep(-1.0, 0.0, direction.y));
+    return select(ground, sky, direction.y >= 0.0);
+  }
   let sky = mix(vec3f(0.85, 0.65, 0.76), vec3f(0.69, 0.58, 0.82), pow(upward, 0.45));
   let ground = mix(vec3f(0.35, 0.13, 0.25), vec3f(0.68, 0.34, 0.51), smoothstep(-1.0, 0.0, direction.y));
   return select(ground, sky, direction.y >= 0.0);
@@ -282,7 +285,7 @@ fn shadeSurface(input: VertexOutput, filteredCoordinate: vec2f, appearanceDetail
   let material = materialForGrain(grain.materialSeed, composition);
   let microOcclusion = mix(1.0, mix(0.61, 1.0, grainEdge), appearanceDetail);
   let grainAlbedo = material.albedo * mix(0.64, 1.0, grainEdge);
-  let albedo = pinkPalette(mix(vec3f(0.85, 0.32, 0.49), grainAlbedo, appearanceDetail)) * mix(vec3f(1.0), vec3f(0.38, 0.23, 0.31), wetness);
+  let albedo = mix(sandColor(vec3f(0.85, 0.32, 0.49), vec3f(0.59, 0.435, 0.25)), grainAlbedo, appearanceDetail) * mix(vec3f(1.0), select(vec3f(0.38, 0.23, 0.31), vec3f(0.35, 0.32, 0.28), view.shadowControl.y > 2.5), wetness);
   let roughness = mix(mix(0.80, material.roughness, appearanceDetail), 0.22, wetness);
   let alphaSquared = pow(roughness, 4.0);
   let normalHalf = max(0.0, dot(normal, halfway));
@@ -292,7 +295,7 @@ fn shadeSurface(input: VertexOutput, filteredCoordinate: vec2f, appearanceDetail
   let specular = distribution * fresnel * geometry / max(4.0 * cosine * viewCosine, 0.001);
   let diffuse = cosine * (0.84 + 0.16 * (1.0 - viewCosine));
   let ambient = environment(normal) * (0.24 + 0.16 * macroNormal.y) * occlusion * microOcclusion * mix(0.70, 1.0, shade);
-  let direct = vec3f(1.0, 0.91, 0.97) * 2.55 * visibility * microOcclusion;
+  let direct = select(vec3f(1.0, 0.91, 0.97), vec3f(1.0, 0.89, 0.69), view.shadowControl.y > 2.5) * 2.55 * visibility * microOcclusion;
   let reflected = reflect(-towardEye, normal);
   let environmentSpecular = environment(reflected) * fresnel * pow(1.0 - roughness, 2.0) * 0.32 * occlusion * mix(0.42, 1.0, shade);
   let bodyTransmission = albedo * direct * material.translucency * (0.018 + 0.050 * (1.0 - viewCosine)) * roundness * appearanceDetail;
@@ -394,10 +397,10 @@ struct GrainFragmentOutput { @location(0) color: vec4f, @location(1) glint: f32,
   let diffuse = max(0.0, dot(normal, light));
   let fresnel = 0.04 + 0.96 * pow(1.0 - max(0.0, dot(halfway, towardEye)), 5.0);
   let sparkle = pow(max(0.0, dot(normal, halfway)), 36.0) * fresnel;
-  let albedo = pinkPalette(mix(vec3f(0.70, 0.20, 0.39), vec3f(0.98, 0.46, 0.63), input.tint));
+  let albedo = mix(sandColor(vec3f(0.70, 0.20, 0.39), vec3f(0.46, 0.315, 0.17)), sandColor(vec3f(0.98, 0.46, 0.63), vec3f(0.72, 0.56, 0.33)), input.tint);
   let shade = treeShadow(surface.xz);
   let ambient = environment(normal) * 0.34;
-  let direct = vec3f(1.0, 0.91, 0.97) * 2.55 * diffuse * shade;
+  let direct = select(vec3f(1.0, 0.91, 0.97), vec3f(1.0, 0.89, 0.69), view.shadowControl.y > 2.5) * 2.55 * diffuse * shade;
   let radiance = albedo * (ambient + direct) + environment(reflect(-towardEye, normal)) * sparkle * 0.55 * smoothstep(0.72, 0.94, shade);
   let physicalArea = 3.141593 * input.physicalRadius * input.physicalRadius;
   let capsuleArea = 3.141593 * input.radius * input.radius + 4.0 * input.radius * (input.trailRatio * input.radius);

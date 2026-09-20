@@ -15,8 +15,8 @@ export class ToolsMenu {
       const rect = ui.tools.getBoundingClientRect()
       if (event.target === ui.tools && (event.clientX < rect.left || event.clientX > rect.right || event.clientY < rect.top || event.clientY > rect.bottom)) this.close()
     }, { signal })
-    for (const selector of ['[data-shape]', '[data-jewel]']) {
-      const shapeButtons = [...ui.root.querySelectorAll<HTMLButtonElement>(selector)]
+    for (const wheel of ui.root.querySelectorAll('.shapes')) {
+      const shapeButtons = [...wheel.querySelectorAll<HTMLButtonElement>('[data-shape], [data-jewel]')]
       shapeButtons.forEach((button, index) => button.addEventListener('keydown', event => {
         const movement: Record<string, number> = { ArrowRight: 1, ArrowDown: 1, ArrowLeft: -1, ArrowUp: -1 }
         const direction = movement[event.key]

@@ -1,6 +1,8 @@
+import { dinosaurShapes } from './dinosaurs'
+export { dinosaurShapes } from './dinosaurs'
 import type { Point, Stroke } from '../config'
 
-export const shapes = [
+export const cuteShapes = [
   { id: 'heart', name: 'Heart', icon: '♡', path: 'M 0 0.82 C -1 0.16 -1 -0.55 -0.5 -0.65 C -0.22 -0.75 0 -0.48 0 -0.3 C 0 -0.48 0.22 -0.75 0.5 -0.65 C 1 -0.55 1 0.16 0 0.82 Z' },
   { id: 'star', name: 'Star', icon: '☆', path: 'M 0 -0.9 L 0.24 -0.29 L 0.9 -0.28 L 0.38 0.14 L 0.56 0.8 L 0 0.42 L -0.56 0.8 L -0.38 0.14 L -0.9 -0.28 L -0.24 -0.29 Z' },
   { id: 'unicorn', name: 'Unicorn', icon: '🦄', path: 'M -0.65 0.8 C -0.8 0.1 -0.6 -0.3 -0.22 -0.48 L -0.32 -0.88 L 0.02 -0.62 L 0.48 -1 L 0.25 -0.4 L 0.78 0 L 0.65 0.26 L 0.26 0.16 C 0.12 0.4 0.22 0.58 0.4 0.8 Z' },
@@ -10,6 +12,7 @@ export const shapes = [
   { id: 'cat', name: 'Cat', icon: '🐱', path: 'M -0.73 -0.1 L -0.82 -0.94 L -0.28 -0.53 Q 0 -0.66 0.28 -0.53 L 0.82 -0.94 L 0.73 -0.1 C 1.1 0.94 -1.1 0.94 -0.73 -0.1 Z' },
   { id: 'dog', name: 'Dog', icon: '🐶', path: 'M -0.43 -0.54 C -1.1 -1.03 -1.2 0.65 -0.63 0.44 L -0.5 0.03 C -0.58 0.95 0.58 0.95 0.5 0.03 L 0.63 0.44 C 1.2 0.65 1.1 -1.03 0.43 -0.54 Q 0 -0.85 -0.43 -0.54 Z' },
 ] as const
+export const shapes = [...cuteShapes, ...dinosaurShapes] as const
 export type Shape = typeof shapes[number]
 
 // SVG paths are sampled once, outside the animation loop. Contacts use the same

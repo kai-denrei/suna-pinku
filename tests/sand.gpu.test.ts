@@ -362,7 +362,7 @@ test('airborne grains build a nonzero collective optical-depth shadow', async ()
   } finally { shadow.dispose(); solver.dispose(); staging.destroy() }
 })
 
-test.each([false, true])('surface pipeline renders opaque pixels, with jewels: %s', async (withJewels) => {
+test.each([{ withJewels: false, palette: 1 }, { withJewels: true, palette: 1 }, { withJewels: false, palette: 3 }, { withJewels: true, palette: 3 }])('surface renders opaque pixels: $palette, jewels: $withJewels', async ({ withJewels, palette }) => {
   const solver = new SandSolver(device, 128)
   await solver.initialize()
   const renderer = new SandRenderer(device, solver, 'rgba8unorm')
@@ -371,6 +371,7 @@ test.each([false, true])('surface pipeline renders opaque pixels, with jewels: %
   try {
     await renderer.initialize()
     renderer.resize(256, 192)
+    renderer.palette = palette
     if (withJewels) jewelPresets.forEach((preset, i) => renderer.jewels.add(preset, { x: (i - 1.5) * 0.06, y: 0 }, 0.02))
     step(solver, { from: { x: -0.07, y: 0 }, to: { x: 0.07, y: 0 }, velocity: { x: 0.5, y: 0 }, radius: 0.022, pressure: 1, active: true }, 100)
     device.pushErrorScope('validation')
@@ -442,7 +443,7 @@ test('gem weight displaces sand into rims and conserves total mass', async () =>
   } finally { solver.dispose() }
 })
 
-test('droplets darken the rendered sand and Fresh Sand clears the moisture', async () => {
+test.each([1, 3])('droplets darken sand palette %s and Fresh Sand clears moisture', async (palette) => {
   const solver = new SandSolver(device, 128)
   await solver.initialize()
   const renderer = new SandRenderer(device, solver, 'rgba8unorm')
@@ -462,6 +463,7 @@ test('droplets darken the rendered sand and Fresh Sand clears the moisture', asy
   }
   try {
     await renderer.initialize(); renderer.resize(256, 192)
+    renderer.palette = palette
     const dry = await brightness()
     for (let i = 0; i < 4; i++) renderer.wetSand.field.drop({ x: 0, y: 0 }, -1000)
     const wet = await brightness()
