@@ -1,5 +1,5 @@
 import { INTRO_TITLE } from '../render/markings'
-import { jewelPresets } from '../play/jewels'
+import { DEFAULT_JEWEL_SIZE, MIN_JEWEL_SIZE, MAX_JEWEL_SIZE, jewelPresets } from '../play/jewels'
 import { shapes } from '../play/shapes'
 export type InterfaceElements = ReturnType<typeof createInterface>
 
@@ -24,6 +24,7 @@ export function createInterface(root: HTMLDivElement) {
           const angle = (index * 90 - 90) * Math.PI / 180
           return `<button type="button" data-jewel="${jewel.id}" aria-pressed="false" style="--x:${Math.cos(angle) * 37}%;--y:${Math.sin(angle) * 37}%"><svg viewBox="-1.5 -1.5 3 3" aria-hidden="true"><path d="${jewel.path}" /></svg><span>${jewel.name}</span></button>`
         }).join('')}<button id="close-jewels" class="wheel-center" aria-label="Hide Kira kira wheel"><span aria-hidden="true">✧</span><span>kira kira</span></button></div>
+        <label class="size-label">Gem size <input id="jewel-size" type="range" min="${MIN_JEWEL_SIZE * 1000}" max="${MAX_JEWEL_SIZE * 1000}" step="1" value="${DEFAULT_JEWEL_SIZE * 1000}" aria-label="Gem size"></label>
         <button id="clear-jewels">Clear gems</button><p id="jewel-count">0 / 24 treasures</p>
         <p>Tap to drop a treasure. In Draw, drag it to move it.</p>
       </div>
@@ -57,6 +58,7 @@ export function createInterface(root: HTMLDivElement) {
     tools: element<HTMLDialogElement>('#tool-dialog'), cog: element<HTMLButtonElement>('#sand-cog'),
     hint: element<HTMLElement>('#hint'), drawer: element<HTMLElement>('#drawer'),
     draw: element<HTMLButtonElement>('#draw'), shapes: element<HTMLButtonElement>('#shapes'),
+    jewelSize: element<HTMLInputElement>('#jewel-size'),
     jewels: element<HTMLButtonElement>('#jewels'), jewelDrawer: element<HTMLElement>('#jewel-drawer'),
     water: element<HTMLButtonElement>('#water'),
     fullscreen: element<HTMLButtonElement>('#fullscreen'), stampSize: element<HTMLInputElement>('#stamp-size'),

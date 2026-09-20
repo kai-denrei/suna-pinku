@@ -9,6 +9,8 @@ export const jewelPresets = [
 ] as const
 export type JewelPreset = typeof jewelPresets[number]
 export type Jewel = { id: number; preset: JewelPreset; position: Point; size: number; rotation: number; droppedAt: number; held: boolean }
+export const MIN_JEWEL_SIZE = 0.009
+export const MAX_JEWEL_SIZE = 0.028
 export const DEFAULT_JEWEL_SIZE = 0.013
 export const MAX_JEWELS = 24
 
@@ -29,7 +31,7 @@ export class JewelCollection {
   private contactCache: { jewel: Jewel; stroke: Stroke }[] = []
   add(preset: JewelPreset, position: Point, size = DEFAULT_JEWEL_SIZE): Jewel | undefined {
     if (this.items.length >= MAX_JEWELS) return
-    const jewel = { id: ++this.sequence, preset, position: { ...position }, size: Math.min(0.028, Math.max(0.009, size)), rotation: (this.sequence % 7 - 3) * 0.09, droppedAt: performance.now() / 1000, held: false }
+    const jewel = { id: ++this.sequence, preset, position: { ...position }, size: Math.min(MAX_JEWEL_SIZE, Math.max(MIN_JEWEL_SIZE, size)), rotation: (this.sequence % 7 - 3) * 0.09, droppedAt: performance.now() / 1000, held: false }
     this.move(jewel, position)
     this.items.push(jewel)
     return jewel

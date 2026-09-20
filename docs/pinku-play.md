@@ -27,7 +27,9 @@ Shape selection returns to Draw after three seconds without use. Selection and c
 The second radial wheel holds four reusable treasures: rose quartz, heart gem,
 star charm, and pearl. Tap or drag to place; Draw mode also lets a finger pick up
 and move an existing treasure. Placement tools return to Draw after three idle
-seconds. Default gem size is 0.013 world units, shared with the placement preview;
+seconds. The Kira kira picker includes a Gem size slider (0.009–0.028 world units,
+default 0.013). It controls the placement preview and new gems; existing gems
+retain their own size. The selection lasts for the current session;
 footprints and rendering scale with the gem. Clear gems preserves drawings;
 Fresh sand clears both.
 
