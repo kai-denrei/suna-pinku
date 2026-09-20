@@ -15,6 +15,9 @@ export class PlayController {
   private activePointer: number | undefined
   private interactive = true
   private disposed = false
+  private shapeIdleTimer: ReturnType<typeof setTimeout> | undefined
+  private shapeIdleDeadline = Infinity
+  private returnToDraw: () => void = () => {}
   private readonly samples = new Map(shapes.map(shape => [shape.id, sampleShape(shape)]))
   palette = 0
 
@@ -22,11 +25,19 @@ export class PlayController {
     this.ui = ui
     const { signal } = this.abort
     const preview = ui.root.querySelector<SVGSVGElement>('.stamp-preview')!
-    const menu = new ToolsMenu(ui, () => { cancelDrawing(); this.activePointer = undefined; preview.setAttribute('hidden', '') }, signal)
+    const menu = new ToolsMenu(ui, () => {
+      cancelDrawing()
+      const wasPlacing = this.activePointer !== undefined
+      this.activePointer = undefined
+      preview.setAttribute('hidden', '')
+      if (wasPlacing) this.armShapeTimeout()
+      this.expireIdleShape()
+    }, signal)
     const hint = (message: string) => { ui.hint.textContent = message }
     const closeDrawer = () => { ui.drawer.hidden = true; ui.shapes.setAttribute('aria-expanded', 'false') }
     const select = (shape?: Shape) => {
-      cancelDrawing()
+      this.clearShapeTimeout()
+      if (this.interactive) cancelDrawing()
       this.selected = shape
       this.activePointer = undefined
       preview.setAttribute('hidden', '')
@@ -35,7 +46,9 @@ export class PlayController {
       ui.shapes.classList.toggle('selected', !!shape)
       ui.root.querySelectorAll<HTMLButtonElement>('[data-shape]').forEach(button => button.setAttribute('aria-pressed', String(button.dataset.shape === shape?.id)))
       hint(shape ? `${shape.name.toLowerCase()} wishes ♡ tap or drag on the sand` : 'Draw something fleeting.')
+      this.armShapeTimeout()
     }
+    this.returnToDraw = () => select()
     const shake = (strength = 1) => {
       if (!this.interactive || document.hidden) return
       solver.shake(strength)
@@ -75,10 +88,16 @@ export class PlayController {
       setPalette(Number(button.dataset.palette))
       try { localStorage.setItem('pinku-palette', String(this.palette)) } catch { /* Storage is optional. */ }
     }, { signal }))
-    const cancel = () => { this.activePointer = undefined; preview.setAttribute('hidden', '') }
+    const cancel = () => {
+      const wasPlacing = this.activePointer !== undefined
+      this.activePointer = undefined
+      preview.setAttribute('hidden', '')
+      if (wasPlacing) this.armShapeTimeout()
+    }
+    window.addEventListener('focus', () => this.expireIdleShape(), { signal })
     window.addEventListener('blur', cancel, { signal })
     window.addEventListener('resize', cancel, { signal })
-    document.addEventListener('visibilitychange', () => { if (document.hidden) { cancel(); this.pending = []; solver.cancelShake() } }, { signal })
+    document.addEventListener('visibilitychange', () => { if (document.hidden) { cancel(); this.pending = []; solver.cancelShake() } else this.expireIdleShape() }, { signal })
     ui.canvas.addEventListener('keydown', event => { if (event.key === 'Escape') { select(); closeDrawer(); menu.close() } }, { signal })
     const locate = (event: PointerEvent) => {
       const rect = ui.canvas.getBoundingClientRect()
@@ -107,9 +126,11 @@ export class PlayController {
       path.style.strokeWidth = '2'
     }
     ui.canvas.addEventListener('pointerdown', event => {
+      this.expireIdleShape()
       if (!this.selected) return
       event.stopImmediatePropagation(); event.preventDefault()
       if (!this.interactive || this.activePointer !== undefined || (event.pointerType === 'mouse' && event.button !== 0)) return
+      this.clearShapeTimeout()
       this.activePointer = event.pointerId
       ui.canvas.setPointerCapture(event.pointerId)
       showPreview(event)
@@ -136,6 +157,20 @@ export class PlayController {
     ui.canvas.addEventListener('pointerleave', () => { if (this.activePointer === undefined) preview.setAttribute('hidden', '') }, { signal })
 
   }
+  private clearShapeTimeout() {
+    clearTimeout(this.shapeIdleTimer)
+    this.shapeIdleTimer = undefined
+    this.shapeIdleDeadline = Infinity
+  }
+  private armShapeTimeout() {
+    this.clearShapeTimeout()
+    if (!this.selected || this.activePointer !== undefined || this.disposed) return
+    this.shapeIdleDeadline = Date.now() + 3000
+    this.shapeIdleTimer = setTimeout(() => this.expireIdleShape(), 3000)
+  }
+  private expireIdleShape() {
+    if (this.selected && this.activePointer === undefined && Date.now() >= this.shapeIdleDeadline) this.returnToDraw()
+  }
   nextBatch(strokes: readonly Stroke[]) {
     return [...strokes, ...this.pending.splice(0, Math.max(0, SAND.maxContacts - strokes.length))]
   }
@@ -143,9 +178,11 @@ export class PlayController {
     this.interactive = value
     this.ui.root.querySelectorAll<HTMLButtonElement | HTMLInputElement>('.toolbar button, .settings button, .settings input, .drawer button, .drawer input').forEach(control => { control.disabled = !value })
     if (!value) {
+      this.clearShapeTimeout()
+      if (this.selected) this.returnToDraw()
       this.pending = []; this.activePointer = undefined
       this.ui.root.querySelector<SVGSVGElement>('.stamp-preview')!.setAttribute('hidden', '')
     }
   }
-  dispose() { this.disposed = true; this.abort.abort(); this.motion.dispose(); this.pending = [] }
+  dispose() { this.disposed = true; this.clearShapeTimeout(); this.abort.abort(); this.motion.dispose(); this.pending = [] }
 }
