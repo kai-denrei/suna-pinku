@@ -46,7 +46,7 @@ struct Output { @location(0) color: vec4f, @location(1) glint: f32 }
   let halfVector = normalize(light + eye);
   let diffuse = max(0.0, dot(normal, light));
   let fresnel = pow(1.0 - max(0.0, dot(normal, eye)), 4.0);
-  let pearl = input.color.w > 2.5;
+  let pearl = input.color.w == 3.0;
   let specular = pow(max(0.0, dot(normal, halfVector)), select(85.0, 42.0, pearl));
   let reflection = reflect(-eye, normal);
   let studioBand = pow(max(0.0, 1.0 - abs(reflection.x + reflection.z * 0.25)), 20.0);
@@ -78,7 +78,7 @@ fn corner(index: u32) -> vec2f {
   let uv = corner(index);
   let phase = view.right.w * 1.8 + jewel.detail.x * 2.4;
   let pulse = select(0.25 + 0.75 * pow(0.5 + 0.5 * sin(phase), 6.0), 0.42, view.up.w > 0.5);
-  let elevation = select(select(1.03, 0.58, jewel.color.w > 0.5), 1.70, jewel.color.w > 2.5);
+  let elevation = select(select(select(1.03, 0.58, jewel.color.w > 0.5), 0.70, jewel.color.w == 4.0), 1.70, jewel.color.w == 3.0);
   let center = vec3f(jewel.placement.x - jewel.placement.z * 0.20, baseHeight(jewel) + jewel.placement.z * elevation, jewel.placement.y);
   let world = center + (view.right.xyz * uv.x + view.up.xyz * uv.y) * jewel.placement.z * (0.32 + pulse * 0.4);
   return Quad(project(world), uv, pulse);

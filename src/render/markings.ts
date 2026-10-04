@@ -76,14 +76,14 @@ export class SandMarkings {
     this.device.queue.writeTexture({ texture: this.texture }, context.getImageData(0, 0, 1024, 512).data, { bytesPerRow: 4096 }, [1024, 512])
   }
 
-  layout(camera: SandCamera, width: number, height: number, cogX: number, cogY: number) {
+  layout(camera: SandCamera, width: number, height: number, cogX: number, cogY: number, cogRadius = 22) {
     const titleWidth = Math.min(width * 0.82, 620, this.message ? height * 0.96 : Infinity)
     const centerY = height * 0.36
     const halfHeight = Math.min(titleWidth / (this.message ? 4 : 8), height * 0.24)
     const left = camera.screenToBed((width - titleWidth) / 2, centerY - halfHeight, width, height)
     const right = camera.screenToBed((width + titleWidth) / 2, centerY + halfHeight, width, height)
     const cog = camera.screenToBed(cogX, cogY, width, height)
-    const edge = camera.screenToBed(cogX + 20, cogY, width, height)
+    const edge = camera.screenToBed(cogX + cogRadius, cogY, width, height)
     this.data.set([left.x, left.y, right.x - left.x, right.y - left.y, cog.x, cog.y, Math.abs(edge.x - cog.x), 1])
   }
 

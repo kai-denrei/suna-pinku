@@ -1,6 +1,6 @@
 type V = [number, number, number]
 export function jewelMeshes(): Float32Array[] {
-  const meshes: number[][] = [[], [], [], []]
+  const meshes: number[][] = [[], [], [], [], []]
   const triangle = (mesh: number[], a: V, b: V, c: V, smooth = false) => {
     const u = b.map((v, i) => v - a[i]), v = c.map((value, i) => value - a[i])
     const n = [u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2], u[0] * v[1] - u[1] * v[0]]
@@ -35,6 +35,17 @@ export function jewelMeshes(): Float32Array[] {
     const a = sphere(y * Math.PI / 12, x * Math.PI / 12), b = sphere(y * Math.PI / 12, (x + 1) * Math.PI / 12)
     const c = sphere((y + 1) * Math.PI / 12, x * Math.PI / 12), d = sphere((y + 1) * Math.PI / 12, (x + 1) * Math.PI / 12)
     triangle(meshes[3], a, b, c, true); triangle(meshes[3], b, d, c, true)
+  }
+  // A classic diamond silhouette with a raised table and five crisp crown facets.
+  const diamond: V[] = [[-0.65, 0.16, -0.7], [0.65, 0.16, -0.7], [1, 0.16, -0.15], [0, 0.16, 1], [-1, 0.16, -0.15]]
+  for (let i = 0; i < diamond.length; i++) {
+    const a = diamond[i], b = diamond[(i + 1) % diamond.length]
+    const ta: V = [a[0] * 0.45, 0.65, a[2] * 0.45]
+    const tb: V = [b[0] * 0.45, 0.65, b[2] * 0.45]
+    triangle(meshes[4], [0, 0.65, 0], tb, ta)
+    triangle(meshes[4], a, ta, tb)
+    triangle(meshes[4], a, tb, b)
+    triangle(meshes[4], a, b, [0, 0, 0])
   }
   return meshes.map(mesh => new Float32Array(mesh))
 }

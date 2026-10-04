@@ -30,7 +30,10 @@ describe('treasures', () => {
     expect(jewels.hit(camera, center, 844, 390)).toBe(jewel)
   })
   test('all mesh vertices have finite unit normals', () => {
-    for (const mesh of jewelMeshes()) {
+    const meshes = jewelMeshes()
+    expect(meshes).toHaveLength(jewelPresets.length)
+    for (const mesh of meshes) {
+      expect(mesh.length).toBeGreaterThan(0)
       expect(mesh.length % 18).toBe(0)
       expect([...mesh].every(Number.isFinite)).toBe(true)
       for (let i = 0; i < mesh.length; i += 6) expect(Math.hypot(mesh[i+3], mesh[i+4], mesh[i+5])).toBeCloseTo(1)
@@ -48,7 +51,20 @@ test('gem weight begins after landing, suspends while held, and shares a bounded
   jewels.lift(gem)
   expect(jewels.contacts(4, gem.droppedAt + 2)).toHaveLength(0)
   jewels.release(gem)
-  for (let i = 0; i < 20; i++) jewels.add(jewelPresets[i % 4], { x: i * 0.01, y: 0 }, 0.016)
+  for (let i = 0; i < 20; i++) jewels.add(jewelPresets[i % jewelPresets.length], { x: i * 0.01, y: 0 }, 0.016)
   expect(jewels.contacts(4, performance.now() / 1000 + 2)).toHaveLength(4)
   expect(jewels.contacts(0)).toHaveLength(0)
+})
+
+test.each(jewelPresets)('$name has a renderable mesh and leaves a finite sand contact after landing', preset => {
+  const jewels = new JewelCollection()
+  const gem = jewels.add(preset, { x: 0, y: 0 })!
+  expect(jewelMeshes()[preset.kind].length).toBeGreaterThan(0)
+  const contacts = jewels.contacts(8, gem.droppedAt + 1)
+  expect(contacts.length).toBeGreaterThan(0)
+  for (const contact of contacts) {
+    expect(contact.pressure).toBeGreaterThan(0)
+    expect(contact.radius).toBeGreaterThan(0)
+    expect(Number.isFinite(contact.from.x + contact.from.y)).toBe(true)
+  }
 })

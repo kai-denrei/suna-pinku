@@ -6,6 +6,7 @@ export const jewelPresets = [
   { id: 'heart-gem', name: 'Heart gem', kind: 1, color: [0.86, 0.12, 0.36], path: 'M 0 0.82 C -1 0.16 -1 -0.55 -0.5 -0.65 C -0.22 -0.75 0 -0.48 0 -0.3 C 0 -0.48 0.22 -0.75 0.5 -0.65 C 1 -0.55 1 0.16 0 0.82 Z' },
   { id: 'star-charm', name: 'Star charm', kind: 2, color: [1, 0.66, 0.18], path: 'M 0 -0.9 L 0.24 -0.29 L 0.9 -0.28 L 0.38 0.14 L 0.56 0.8 L 0 0.42 L -0.56 0.8 L -0.38 0.14 L -0.9 -0.28 L -0.24 -0.29 Z' },
   { id: 'pearl', name: 'Pearl', kind: 3, color: [1, 0.82, 0.91], path: 'M -0.85 0 A .85 .85 0 1 0 .85 0 A .85 .85 0 1 0 -.85 0 Z' },
+  { id: 'diamond', name: 'Diamond', kind: 4, color: [0.80, 0.93, 1], path: 'M -0.65 -0.7 L 0.65 -0.7 L 1 -0.15 L 0 1 L -1 -0.15 Z' },
 ] as const
 export type JewelPreset = typeof jewelPresets[number]
 export type Jewel = { id: number; preset: JewelPreset; position: Point; size: number; rotation: number; droppedAt: number; held: boolean }
@@ -19,8 +20,9 @@ const footprints = [
   [{ x: -0.34, y: -0.15, radius: 0.65 }, { x: 0.34, y: -0.15, radius: 0.65 }, { x: 0, y: 0.35, radius: 0.48 }],
   [{ x: 0, y: 0, radius: 0.58 }, ...Array.from({ length: 5 }, (_, i) => ({ x: Math.sin(i * Math.PI * 0.4) * 0.50, y: -Math.cos(i * Math.PI * 0.4) * 0.50, radius: 0.40 }))],
   [{ x: 0, y: 0, radius: 0.64 }],
+  [{ x: -0.38, y: -0.18, radius: 0.48 }, { x: 0.38, y: -0.18, radius: 0.48 }, { x: 0, y: 0.36, radius: 0.36 }],
 ]
-const weights = [0.30, 0.24, 0.18, 0.34]
+const weights = [0.30, 0.24, 0.18, 0.34, 0.28]
 
 export class JewelCollection {
   readonly items: Jewel[] = []

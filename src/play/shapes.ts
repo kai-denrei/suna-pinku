@@ -1,6 +1,7 @@
 import { dinosaurShapes } from './dinosaurs'
 export { dinosaurShapes } from './dinosaurs'
 import type { Point, Stroke } from '../config'
+import type { SandCamera } from '../render/camera'
 
 export const cuteShapes = [
   { id: 'heart', name: 'Heart', icon: '♡', path: 'M 0 0.82 C -1 0.16 -1 -0.55 -0.5 -0.65 C -0.22 -0.75 0 -0.48 0 -0.3 C 0 -0.48 0.22 -0.75 0.5 -0.65 C 1 -0.55 1 0.16 0 0.82 Z' },
@@ -34,4 +35,14 @@ export function stampStrokes(points: readonly Point[], center: Point, size: numb
     const to = { x: center.x + point.x * size, y: center.y + point.y * size }
     return { from, to, radius: 0.0035, pressure: 0.95, velocity: { x: 0, y: 0 }, active: true }
   })
+}
+
+// Keep SVG up/right aligned with the display in either viewport orientation.
+// Inverse-project each sample so perspective cannot tilt a stamp near an edge.
+export function screenAlignedStamp(points: readonly Point[], center: Point, size: number,
+  camera: SandCamera, width: number, height: number): Point[] {
+  const origin = camera.bedToScreen(center, width, height)
+  const edge = camera.bedToScreen({ x: center.x + size, y: center.y }, width, height)
+  const pixels = Math.abs(edge.x - origin.x)
+  return points.map(point => camera.screenToBed(origin.x + point.x * pixels, origin.y + point.y * pixels, width, height))
 }

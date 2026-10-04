@@ -104,7 +104,7 @@ dialog::backdrop {
   backdrop-filter: blur(3px);
 }
 dialog p {
-  font-size: 12px;
+  font-size: 14px;
   line-height: 1.6;
 }
 dialog h2 {
@@ -112,7 +112,8 @@ dialog h2 {
 }
 .toybox {
   padding: 12px;
-  width: min(360px, calc(100% - 24px));
+  width: min(420px, calc(100% - 24px));
+  overflow-y: auto;
 }
 .tools-heading {
   display: flex;
@@ -139,7 +140,7 @@ dialog h2 {
 }
 .shapes {
   position: relative;
-  width: min(280px, 100%);
+  width: min(328px, 100%);
   aspect-ratio: 1;
   margin: 0 auto;
   border-radius: 50%;
@@ -156,8 +157,8 @@ dialog h2 {
   top: calc(50% + var(--y));
   left: calc(50% + var(--x));
   translate: -50% -50%;
-  width: 58px;
-  height: 58px;
+  width: 72px;
+  height: 72px;
   border-radius: 50%;
   display: flex;
   flex-direction: column;
@@ -165,7 +166,7 @@ dialog h2 {
   align-items: center;
   justify-content: center;
   background: #ffe6ee;
-  font-size: 9px;
+  font-size: 14px;
 }
 .shapes svg {
   width: 30px;
@@ -196,7 +197,7 @@ dialog h2 {
   border-radius: 50%;
   background: transparent;
   font-family: Georgia, serif;
-  font-size: 12px;
+  font-size: 14px;
   font-style: italic;
 }
 .wheel-center span:first-child {
@@ -207,7 +208,7 @@ dialog h2 {
   align-items: center;
   justify-content: center;
   gap: 12px;
-  font-size: 11px;
+  font-size: 14px;
 }
 .size-label input {
   width: 112px;
@@ -216,12 +217,12 @@ dialog h2 {
 }
 .drawer p {
   margin: 0;
-  font-size: 10px;
+  font-size: 14px;
   color: #986279;
 }
 .toolbar {
   display: grid;
-  grid-template-columns: repeat(5, 1fr);
+  grid-template-columns: repeat(auto-fit, minmax(64px, 1fr));
   gap: 4px;
   padding-top: 6px;
   border-top: 1px solid #efccda;
@@ -235,7 +236,7 @@ dialog h2 {
   background: transparent;
   border-radius: 18px;
   min-height: 58px;
-  font-size: 10px;
+  font-size: 14px;
   font-weight: 650;
 }
 .toolbar button span {
@@ -250,11 +251,12 @@ dialog h2 {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 8px;
-  padding: 4px 5px 0;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 8px 5px 0;
   border-top: 1px solid #eec9d5;
   margin-top: 6px;
-  font-size: 10px;
+  font-size: 14px;
 }
 .brush-label {
   display: flex;
@@ -262,7 +264,7 @@ dialog h2 {
   gap: 6px;
 }
 .settings input {
-  width: 56px;
+  width: clamp(100px, 25vw, 150px);
   min-height: 44px;
   accent-color: #d65c8b;
 }
@@ -271,8 +273,8 @@ dialog h2 {
   gap: 7px;
 }
 .swatch {
-  width: 24px;
-  height: 24px;
+  width: 44px;
+  height: 44px;
   border-radius: 50%;
   border: 3px solid #fff;
 }
@@ -290,11 +292,12 @@ dialog h2 {
   min-height: 44px;
   background: transparent;
   padding: 0 3px;
-  font-size: 10px;
+  font-size: 14px;
   font-weight: 700;
 }
 .extra-tools {
   display: flex;
+  flex-wrap: wrap;
   justify-content: center;
   gap: 12px;
 }
@@ -303,10 +306,10 @@ dialog h2 {
   padding: 0 14px;
   border-radius: 22px;
   background: #fce1ed;
-  font-size: 11px;
+  font-size: 14px;
 }
 .hint {
-  font-size: 10px;
+  font-size: 14px;
   margin: 10px 8px 2px;
   color: #986279;
 }
@@ -415,14 +418,15 @@ dialog h2 {
     padding-inline: 0;
   }
   .settings input {
-    width: 44px;
+    width: 100px;
   }
   .swatches {
     gap: 6px;
   }
   .shapes :is([data-shape], [data-jewel]) {
-    width: 54px;
-    height: 54px;
+    width: 62px;
+    height: 62px;
+    font-size: 12px;
   }
 }
 @media (orientation: landscape) and (max-height: 600px) and (min-width: 500px) {
@@ -434,7 +438,7 @@ dialog h2 {
   }
   .toybox[open] {
     display: grid;
-    grid-template-columns: minmax(220px, 1fr) minmax(220px, 1fr);
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
     column-gap: 10px;
   }
   .tools-heading {
@@ -451,11 +455,12 @@ dialog h2 {
     grid-column: 2;
   }
   .shapes {
-    width: 220px;
+    width: min(280px, 100%);
   }
   .shapes :is([data-shape], [data-jewel]) {
-    width: 48px;
-    height: 48px;
+    width: 60px;
+    height: 60px;
+    font-size: 12px;
   }
   .shapes svg {
     width: 24px;
@@ -470,7 +475,7 @@ dialog h2 {
     justify-content: center;
   }
   .settings input {
-    width: 70px;
+    width: 120px;
   }
   .drawer p {
     display: none;
@@ -489,7 +494,7 @@ dialog h2 {
   border-radius: 22px;
   padding: 0 18px;
   background: #fce1ed;
-  font-size: 11px;
+  font-size: 14px;
 }
 
 #water svg {
@@ -512,8 +517,52 @@ dialog h2 {
   padding: 0 16px;
   border-radius: 22px;
   background: transparent;
-  font-size: 12px;
+  font-size: 14px;
 }
 .shape-sets [aria-pressed="true"] {
   background: #f9c9dc;
+}
+
+/* A full finger-sized input area with an explicit thumb on WebKit and Firefox. */
+input[type="range"] {
+  appearance: none;
+  -webkit-appearance: none;
+  height: 48px;
+  min-height: 48px;
+  background: transparent;
+  cursor: pointer;
+  touch-action: pan-y;
+}
+input[type="range"]::-webkit-slider-runnable-track {
+  height: 8px;
+  border-radius: 4px;
+  background: #eab0c7;
+}
+input[type="range"]::-moz-range-track {
+  height: 8px;
+  border-radius: 4px;
+  background: #eab0c7;
+}
+input[type="range"]::-webkit-slider-thumb {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 32px;
+  height: 32px;
+  margin-top: -12px;
+  border: 3px solid #fff1f6;
+  border-radius: 50%;
+  background: #c34d7d;
+  box-shadow: 0 2px 5px #82375440;
+}
+input[type="range"]::-moz-range-thumb {
+  box-sizing: border-box;
+  width: 32px;
+  height: 32px;
+  border: 3px solid #fff1f6;
+  border-radius: 50%;
+  background: #c34d7d;
+  box-shadow: 0 2px 5px #82375440;
+}
+#sand-cog:active {
+  transform: none;
 }

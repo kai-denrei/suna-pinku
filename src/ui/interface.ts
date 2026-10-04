@@ -22,7 +22,7 @@ export function createInterface(root: HTMLDivElement) {
       </div>
       <div class="drawer" id="jewel-drawer" hidden>
         <div class="shapes jewels" role="group" aria-label="Kira kira wheel">${jewelPresets.map((jewel, index) => {
-          const angle = (index * 90 - 90) * Math.PI / 180
+          const angle = (index * 360 / jewelPresets.length - 90) * Math.PI / 180
           return `<button type="button" data-jewel="${jewel.id}" aria-pressed="false" style="--x:${Math.cos(angle) * 37}%;--y:${Math.sin(angle) * 37}%"><svg viewBox="-1.5 -1.5 3 3" aria-hidden="true"><path d="${jewel.path}" /></svg><span>${jewel.name}</span></button>`
         }).join('')}<button id="close-jewels" class="wheel-center" aria-label="Hide Kira kira wheel"><span aria-hidden="true">✧</span><span>kira kira</span></button></div>
         <label class="size-label">Gem size <input id="jewel-size" type="range" min="${MIN_JEWEL_SIZE * 1000}" max="${MAX_JEWEL_SIZE * 1000}" step="1" value="${DEFAULT_JEWEL_SIZE * 1000}" aria-label="Gem size"></label>

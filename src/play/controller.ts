@@ -6,7 +6,7 @@ import type { InterfaceElements } from '../ui/interface'
 import { JewelCollection, jewelPresets, type Jewel, type JewelPreset } from './jewels'
 import { WaterBrush } from './water-brush'
 import type { WetnessField } from './wetness'
-import { shapes, sampleShape, stampStrokes, type Shape } from './shapes'
+import { shapes, sampleShape, stampStrokes, screenAlignedStamp, type Shape } from './shapes'
 
 export class PlayController {
   private readonly abort = new AbortController()
@@ -140,14 +140,14 @@ export class PlayController {
       const center = locate(event)
       const rect = ui.canvas.getBoundingClientRect()
       const size = 'kind' in this.selected ? Number(ui.jewelSize.value) / 1000 : Number(ui.stampSize.value) / 1000
-      const project = (point: { x: number; y: number }) => {
-        const world = [center.x + point.x * size - camera.eye[0], SAND.depth - camera.eye[1], center.y + point.y * size - camera.eye[2]]
-        const dot = (axis: readonly number[]) => world.reduce((sum, value, i) => sum + value * axis[i], 0)
-        const depth = dot(camera.forward)
-        return [(dot(camera.right) / (depth * camera.tanHalfFov * camera.aspect) + 1) * rect.width / 2 + rect.left - event.clientX,
-          (1 - dot(camera.up) / (depth * camera.tanHalfFov)) * rect.height / 2 + rect.top - event.clientY]
-      }
-      const points = this.samples.get(this.selected.id)!.map(project)
+      const samples = this.samples.get(this.selected.id)!
+      const worldPoints = 'kind' in this.selected
+        ? samples.map(point => ({ x: center.x + point.x * size, y: center.y + point.y * size }))
+        : screenAlignedStamp(samples, center, size, camera, rect.width, rect.height)
+      const points = worldPoints.map(point => {
+        const projected = camera.bedToScreen(point, rect.width, rect.height)
+        return [projected.x + rect.left - event.clientX, projected.y + rect.top - event.clientY]
+      })
       preview.setAttribute('viewBox', '-100 -100 200 200')
       preview.style.width = '200px'; preview.style.height = '200px'
       const path = preview.querySelector('path')!
@@ -190,7 +190,12 @@ export class PlayController {
           updateCount()
         } else {
           // Bound queued work so rapid stamping cannot create a seconds-long backlog.
-          if (this.pending.length < 240) this.pending.push(...stampStrokes(this.samples.get(this.selected.id)!, locate(event), Number(ui.stampSize.value) / 1000))
+          if (this.pending.length < 240) {
+            const rect = ui.canvas.getBoundingClientRect()
+            const points = screenAlignedStamp(this.samples.get(this.selected.id)!, locate(event),
+              Number(ui.stampSize.value) / 1000, camera, rect.width, rect.height)
+            this.pending.push(...stampStrokes(points, { x: 0, y: 0 }, 1))
+          }
           hint(`${this.selected.name.toLowerCase()} pressed into sand ♡`)
         }
       }

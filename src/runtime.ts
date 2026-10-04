@@ -30,6 +30,7 @@ export async function startSandboard(ui: InterfaceElements, monitor: BootMonitor
   let stopped = false
   let framesInFlight = 0
   let resizePending = true
+  let layoutKey = ''
   let resetPending = false
   let waveResetInteractive = false
   let waveResetNeedsTransientClear = false
@@ -57,11 +58,17 @@ export async function startSandboard(ui: InterfaceElements, monitor: BootMonitor
   }
   monitor.setStop(stop)
   const resize = () => {
-    if (!resizePending) return
-    const surface = sizeSurface(ui.root, ui.canvas)
+    const surface = resizePending ? sizeSurface(ui.root, ui.canvas) : ui.canvas.getBoundingClientRect()
+    const cog = ui.cog.getBoundingClientRect()
+    // Safe-area insets and standalone browser chrome can settle after the
+    // orientation event. Follow measured CSS geometry, including button moves.
+    const nextLayoutKey = [surface.x, surface.y, surface.width, surface.height,
+      cog.x, cog.y, cog.width, cog.height, window.devicePixelRatio].join(',')
+    if (!resizePending && nextLayoutKey === layoutKey) return
     const size = drawingBuffer(surface.width, surface.height, window.devicePixelRatio)
     if (!size) return
     resizePending = false
+    layoutKey = nextLayoutKey
     input?.setInteractive(false)
     if (!waveResetInteractive) input?.setInteractive(true)
     play?.cancelPlacement()
@@ -69,9 +76,9 @@ export async function startSandboard(ui: InterfaceElements, monitor: BootMonitor
     ui.root.dataset.orientation = surface.width > surface.height ? 'landscape' : 'portrait'
     ui.canvas.width = size.width; ui.canvas.height = size.height
     renderer.resize(size.width, size.height)
+    renderer.camera.aspect = surface.width / surface.height
     renderer.jewels.fitViewport(renderer.camera, surface.width, surface.height)
-    const cog = ui.cog.getBoundingClientRect()
-    renderer.markings.layout(renderer.camera, surface.width, surface.height, cog.x + cog.width / 2 - surface.x, cog.y + cog.height / 2 - surface.y)
+    renderer.markings.layout(renderer.camera, surface.width, surface.height, cog.x + cog.width / 2 - surface.x, cog.y + cog.height / 2 - surface.y, Math.min(cog.width, cog.height) * 0.34)
   }
   try {
     monitor.stage('Initializing sand transport')
