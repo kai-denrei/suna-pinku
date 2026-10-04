@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'vitest'
-import { JewelCollection, jewelPresets, MAX_JEWELS } from '../src/play/jewels'
+import { JewelCollection, jewelPresets, MAX_JEWELS, JEWEL_FALL_SECONDS, JEWEL_SETTLE_SECONDS } from '../src/play/jewels'
 import { SandCamera } from '../src/render/camera'
 import { jewelMeshes } from '../src/render/jewel-meshes'
 
@@ -45,14 +45,14 @@ test('gem weight begins after landing, suspends while held, and shares a bounded
   const jewels = new JewelCollection()
   const gem = jewels.add(jewelPresets[0], { x: 0, y: 0 }, 0.016)!
   expect(jewels.contacts(4, gem.droppedAt)).toHaveLength(0)
-  const landed = jewels.contacts(4, gem.droppedAt + 1)
+  const landed = jewels.contacts(4, gem.droppedAt + JEWEL_FALL_SECONDS + 0.05)
   expect(landed).toHaveLength(1)
   expect(landed[0].pressure).toBeGreaterThan(0)
   jewels.lift(gem)
   expect(jewels.contacts(4, gem.droppedAt + 2)).toHaveLength(0)
   jewels.release(gem)
   for (let i = 0; i < 20; i++) jewels.add(jewelPresets[i % jewelPresets.length], { x: i * 0.01, y: 0 }, 0.016)
-  expect(jewels.contacts(4, performance.now() / 1000 + 2)).toHaveLength(4)
+  expect(jewels.contacts(4, performance.now() / 1000 + JEWEL_FALL_SECONDS + 0.05)).toHaveLength(4)
   expect(jewels.contacts(0)).toHaveLength(0)
 })
 
@@ -60,11 +60,34 @@ test.each(jewelPresets)('$name has a renderable mesh and leaves a finite sand co
   const jewels = new JewelCollection()
   const gem = jewels.add(preset, { x: 0, y: 0 })!
   expect(jewelMeshes()[preset.kind].length).toBeGreaterThan(0)
-  const contacts = jewels.contacts(8, gem.droppedAt + 1)
+  const contacts = jewels.contacts(8, gem.droppedAt + JEWEL_FALL_SECONDS + 0.05)
   expect(contacts.length).toBeGreaterThan(0)
   for (const contact of contacts) {
     expect(contact.pressure).toBeGreaterThan(0)
     expect(contact.radius).toBeGreaterThan(0)
     expect(Number.isFinite(contact.from.x + contact.from.y)).toBe(true)
   }
+})
+
+test.each(jewelPresets)('$name settles after one landing and restarts only on release', preset => {
+  const jewels = new JewelCollection()
+  const gem = jewels.add(preset, { x: 0, y: 0 })!
+  const landing = gem.droppedAt + JEWEL_FALL_SECONDS
+  expect(jewels.contacts(8, landing - 0.01)).toHaveLength(0)
+  const impact = jewels.contacts(8, landing + 0.01)
+  const fading = jewels.contacts(8, landing + JEWEL_SETTLE_SECONDS * 0.8)
+  expect(impact.length).toBeGreaterThan(0)
+  expect(fading.length).toBe(impact.length)
+  expect(Math.max(...fading.map(contact => contact.pressure))).toBeLessThan(Math.min(...impact.map(contact => contact.pressure)))
+  expect(jewels.contacts(8, landing + JEWEL_SETTLE_SECONDS + 0.01)).toHaveLength(0)
+  // Rebuilding the contact cache for another treasure must not wake this one.
+  const other = jewels.add(preset, { x: 0.1, y: 0 })!
+  other.droppedAt = gem.droppedAt + 5
+  expect(jewels.contacts(8, other.droppedAt + JEWEL_FALL_SECONDS + 0.05).every(contact => contact.from.x > 0.05)).toBe(true)
+  jewels.lift(gem)
+  expect(jewels.contacts(8, landing + 0.05)).toHaveLength(0)
+  jewels.release(gem)
+  expect(jewels.contacts(8, gem.droppedAt)).toHaveLength(0)
+  expect(jewels.contacts(8, gem.droppedAt + JEWEL_FALL_SECONDS + 0.05).length).toBeGreaterThan(0)
+  expect(jewels.contacts(8, gem.droppedAt + 60)).toHaveLength(0)
 })

@@ -417,16 +417,17 @@ test('shake redistributes sand while conserving bed and airborne mass and respec
   solver.dispose()
 })
 
-test('gem weight displaces sand into rims and conserves total mass', async () => {
+test('gem landings displace sand, conserve mass, and settle without continued vibration', async () => {
   const solver = new SandSolver(device, 256)
   await solver.initialize()
   try {
     const jewels = new JewelCollection()
     jewelPresets.forEach((preset, i) => jewels.add(preset, { x: (i - 1.5) * 0.07, y: 0 }, 0.022))
     const initial = await readState(solver)
+    const droppedAt = Math.max(...jewels.items.map(jewel => jewel.droppedAt))
     for (let i = 0; i < 240; i++) {
       const encoder = device.createCommandEncoder()
-      solver.encode(encoder, [jewels.contacts(4, performance.now() / 1000 + 2)])
+      solver.encode(encoder, [jewels.contacts(4, droppedAt + i * SAND.step)])
       device.queue.submit([encoder.finish()])
     }
     const settled = await readState(solver)
@@ -437,8 +438,15 @@ test('gem weight displaces sand into rims and conserves total mass', async () =>
     for (const jewel of jewels.items) {
       const x = Math.floor((jewel.position.x / SAND.extent + 0.5) * solver.resolution)
       const index = (solver.resolution / 2 * solver.resolution + x) * 4
-      expect(initial[index] - settled[index]).toBeGreaterThan(0.001)
+      // Once pressure is released, some sand relaxes back into the imprint.
+      expect(initial[index] - settled[index]).toBeGreaterThan(0.0001)
     }
+    expect(jewels.contacts(4, droppedAt + 2)).toHaveLength(0)
+    step(solver, idleStroke(), 120)
+    const later = await readState(solver)
+    let drift = 0
+    for (let i = 0; i < later.length; i += 4) drift = Math.max(drift, Math.abs(later[i] - settled[i]))
+    expect(drift).toBeLessThan(0.00005)
     expect(errors).toEqual([])
   } finally { solver.dispose() }
 })

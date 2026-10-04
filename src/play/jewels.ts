@@ -14,6 +14,8 @@ export const MIN_JEWEL_SIZE = 0.009
 export const MAX_JEWEL_SIZE = 0.028
 export const DEFAULT_JEWEL_SIZE = 0.013
 export const MAX_JEWELS = 24
+export const JEWEL_FALL_SECONDS = Math.sqrt(0.045 / 0.9)
+export const JEWEL_SETTLE_SECONDS = 0.6
 
 const footprints = [
   [{ x: 0, y: 0, radius: 0.87 }],
@@ -63,9 +65,14 @@ export class JewelCollection {
     for (let visited = 0; visited < this.contactCache.length && batch.length < limit; visited++) {
       const entry = this.contactCache[this.contactCursor % this.contactCache.length]
       this.contactCursor = (this.contactCursor + 1) % this.contactCache.length
-      const age = now - entry.jewel.droppedAt - 0.224
-      if (entry.jewel.held || age < 0) continue
-      batch.push({ ...entry.stroke, pressure: entry.stroke.pressure + 0.16 * Math.exp(-age * 14) })
+      const age = now - entry.jewel.droppedAt - JEWEL_FALL_SECONDS
+      if (entry.jewel.held || age < 0 || age >= JEWEL_SETTLE_SECONDS) continue
+      // Continuous pressure keeps re-excavating the bed as footprint contacts
+      // rotate through the budget, making the gem's sampled support height bob.
+      // Ease the landing impulse to zero, then let the sand come to rest.
+      const t = age / JEWEL_SETTLE_SECONDS
+      const envelope = 1 - t * t * (3 - 2 * t)
+      batch.push({ ...entry.stroke, pressure: (entry.stroke.pressure + 0.16 * Math.exp(-age * 14)) * envelope })
     }
     return batch
   }
